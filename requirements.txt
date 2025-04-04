@@ -1,0 +1,8 @@
+customtkinter>=5.0 # Use a recent version
+pandas>=1.5       # For data manipulation
+yfinance>=0.2     # For fetching stock data
+python-dotenv>=1.0 # For managing environment variables (like API keys)
+matplotlib>=3.5   # For plotting charts
+backtesting>=0.3  # For strategy backtesting framework
+TA-Lib            # For technical indicators like RSI, ATR (Requires C library install first!)
+ephem             # For potential future real lunar calculations (optional for now)
