@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Market Sentiment Analysis: Engineering Documentation</title>
+    <style>
+        /* Retro Trading App Theme */
+        :root {
+            --color-bg: #1a1a2e;
+            --color-bg-secondary: #161625;
+            --color-text: #e0fbfc;
+            --color-accent: #ff69b4;
+            --color-accent-hover: #ff85c1;
+            --color-secondary: #39ff14;
+            --color-neutral: #007f7f;
+            --color-panel: #2a2a4e;
+            --font-family: 'Courier New', monospace;
+        }
+        
+        body {
+            font-family: var(--font-family);
+            background-color: var(--color-bg);
+            color: var(--color-text);
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+            border-bottom: 1px solid var(--color-accent);
+            padding-bottom: 1rem;
+            position: relative;
+        }
+        
+        .led-container {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 1rem;
+        }
+        
+        .led {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin: 0 8px;
+            background-color: var(--color-accent);
+            box-shadow: 0 0 10px var(--color-accent);
+            animation: blink 2s infinite alternate;
+        }
+        
+        .led:nth-child(2) {
+            animation-delay: 0.6s;
+            background-color: var(--color-secondary);
+            box-shadow: 0 0 10px var(--color-secondary);
+        }
+        
+        .led:nth-child(3) {
+            animation-delay: 1.2s;
+            background-color: var(--color-neutral);
+            box-shadow: 0 0 10px var(--color-neutral);
+        }
+        
+        @keyframes blink {
+            0% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        h1 {
+            color: var(--color-accent);
+            font-size: 2.2rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        h2 {
+            color: var(--color-accent);
+            border-bottom: 1px solid var(--color-secondary);
+            padding-bottom: 0.5rem;
+            margin-top: 2.5rem;
+        }
+        
+        h3 {
+            color: var(--color-secondary);
+            margin-top: 1.5rem;
+        }
+        
+        a {
+            color: var(--color-accent);
+            text-decoration: none;
+        }
+        
+        a:hover {
+            text-decoration: underline;
+            color: var(--color-accent-hover);
+        }
+        
+        pre, code {
+            background-color: var(--color-bg-secondary);
+            border: 1px solid var(--color-panel);
+            border-radius: 4px;
+            padding: 1rem;
+            overflow-x: auto;
+            font-family: var(--font-family);
+            margin: 1rem 0;
+        }
+        
+        code {
+            padding: 0.2rem 0.4rem;
+            color: var(--color-secondary);
+        }
+        
+        pre code {
+            padding: 0;
+            border: none;
+        }
+        
+        .section {
+            background-color: var(--color-panel);
+            border-radius: 8px;
+            margin: 2rem 0;
+            padding: 1.5rem;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+        }
+        
+        .diagram {
+            background-color: var(--color-bg-secondary);
+            border: 1px dashed var(--color-accent);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            overflow-x: auto;
+            white-space: pre;
+            font-family: var(--font-family);
+            line-height: 1.2;
+            text-align: left;
+        }
+        
+        .highlight {
+            color: var(--color-secondary);
+            font-weight: bold;
+        }
+        
+        .note {
+            background-color: var(--color-bg-secondary);
+            border-left: 4px solid var(--color-accent);
+            padding: 1rem;
+            margin: 1.5rem 0;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+        }
+        
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--color-panel);
+        }
+        
+        th {
+            background-color: var(--color-panel);
+            color: var(--color-accent);
+            font-weight: bold;
+        }
+        
+        tr:nth-child(even) {
+            background-color: rgba(42, 42, 78, 0.3);
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 3rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--color-accent);
+            font-size: 0.9rem;
+            opacity: 0.8;
+        }
+        
+        /* Visualization styles */
+        .visualization {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 2rem 0;
+        }
+        
+        .assistant-icon {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            background-color: var(--color-accent);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1rem;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .assistant-icon::after {
+            content: "AI";
+            color: var(--color-bg);
+            font-size: 2rem;
+            font-weight: bold;
+        }
+        
+        .pipeline {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            margin: 2rem 0;
+            position: relative;
+        }
+        
+        .pipeline::before {
+            content: "";
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background-color: var(--color-accent);
+            z-index: 0;
+        }
+        
+        .pipeline-step {
+            background-color: var(--color-panel);
+            border: 2px solid var(--color-accent);
+            border-radius: 8px;
+            padding: 1rem;
+            width: 18%;
+            position: relative;
+            z-index: 1;
+            text-align: center;
+        }
+        
+        .pipeline-step h4 {
+            color: var(--color-accent);
+            margin: 0 0 0.5rem 0;
+        }
+        
+        /* JSON response visualization */
+        .json-preview {
+            background-color: var(--color-bg-secondary);
+            border: 1px solid var(--color-panel);
+            border-radius: 4px;
+            padding: 1rem;
+            margin: 1rem 0;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .json-preview::before {
+            content: "JSON Response";
+            position: absolute;
+            top: 0;
+            right: 0;
+            background-color: var(--color-accent);
+            color: var(--color-bg);
+            padding: 0.2rem 0.6rem;
+            font-size: 0.8rem;
+            border-bottom-left-radius: 4px;
+        }
+        
+        /* Terminal effect */
+        .terminal {
+            background-color: var(--color-bg-secondary);
+            border-radius: 6px;
+            box-shadow: 0 2px 15px rgba(0, 0, 0, 0.4);
+            padding: 1rem;
+            margin: 1.5rem 0;
+            position: relative;
+        }
+        
+        .terminal-header {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 25px;
+            background-color: var(--color-panel);
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+        }
+        
+        .terminal-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+        
+        .terminal-dot.red { background-color: #ff5f56; }
+        .terminal-dot.yellow { background-color: #ffbd2e; }
+        .terminal-dot.green { background-color: #27c93f; }
+        
+        .terminal-content {
+            margin-top: 25px;
+            font-family: var(--font-family);
+            color: var(--color-text);
+            white-space: pre-wrap;
+        }
+        
+        .typed-cursor {
+            display: inline-block;
+            width: 10px;
+            height: 18px;
+            background-color: var(--color-accent);
+            animation: blink 1s step-end infinite;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <div class="led-container">
+                <div class="led"></div>
+                <div class="led"></div>
+                <div class="led"></div>
+            </div>
+            <h1>Market Sentiment Analysis</h1>
+            <p>Engineering Documentation — Version 1.0</p>
+        </header>
+
+        <div class="section">
+            <h2>1. System Overview</h2>
+            <p>The Market Sentiment Analysis system integrates artificial intelligence capabilities from OpenAI's Assistants API with the Stock Trading App to provide nuanced sentiment analysis of financial assets. The system combines technical indicators, price data, and machine learning predictions to generate comprehensive market insights with actionable trading recommendations.</p>
+            
+            <div class="pipeline">
+                <div class="pipeline-step">
+                    <h4>Data Collection</h4>
+                    <small>Price & Indicators</small>
+                </div>
+                <div class="pipeline-step">
+                    <h4>Preprocessing</h4>
+                    <small>Formatting & Context</small>
+                </div>
+                <div class="pipeline-step">
+                    <h4>AI Analysis</h4>
+                    <small>OpenAI Assistant</small>
+                </div>
+                <div class="pipeline-step">
+                    <h4>Response Parsing</h4>
+                    <small>JSON Extraction</small>
+                </div>
+                <div class="pipeline-step">
+                    <h4>Visualization</h4>
+                    <small>HTML Report</small>
+                </div>
+            </div>
+            
+            <h3>Core Components</h3>
+            <ol>
+                <li><strong>MarketSentimentAnalyzer</strong>: Core engine that interfaces with OpenAI's Assistants API</li>
+                <li><strong>SentimentModule</strong>: UI components for user interaction</li>
+                <li><strong>App Integration</strong>: Hooks into the main application architecture</li>
+                <li><strong>HTML Report Generator</strong>: Creates visually rich sentiment reports</li>
+            </ol>
+            
+            <div class="note">
+                <p><strong>Technical Note:</strong> The system operates asynchronously, allowing the user interface to remain responsive during the potentially time-intensive AI analysis process. This is achieved through careful state management and proper threading practices.</p>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>2. Assistant Training & Configuration</h2>
+            <p>The core of the sentiment analysis system is a specialized OpenAI Assistant that has been configured for financial market analysis. This section details how the assistant is created, configured, and optimized for stock market sentiment analysis.</p>
+            
+            <h3>2.1 Assistant Creation Process</h3>
+            <p>The assistant is created programmatically using the OpenAI Assistants API. The system first checks if a previously created assistant exists and reuses it if found. If no assistant is found, a new one is created with specific parameters:</p>
+            
+            <div class="terminal">
+                <div class="terminal-header">
+                    <div class="terminal-dot red"></div>
+                    <div class="terminal-dot yellow"></div>
+                    <div class="terminal-dot green"></div>
+                </div>
+                <div class="terminal-content">
+# Creating a new assistant
+assistant = client.beta.assistants.create(
+    name="Stock Market Sentiment Analyzer",
+    description="Analyzes stock market data and provides sentiment analysis with actionable insights",
+    model="gpt-4-turbo-preview",
+    tools=[{"type": "code_interpreter"}],
+    instructions="[Detailed instructions here]"
+)
+                </div>
+            </div>
+            
+            <h3>2.2 Assistant Configuration Parameters</h3>
+            <table>
+                <tr>
+                    <th>Parameter</th>
+                    <th>Value</th>
+                    <th>Description</th>
+                </tr>
+                <tr>
+                    <td>name</td>
+                    <td>Stock Market Sentiment Analyzer</td>
+                    <td>Identifier for the assistant</td>
+                </tr>
+                <tr>
+                    <td>model</td>
+                    <td>gpt-4-turbo-preview</td>
+                    <td>The most advanced model for financial analysis</td>
+                </tr>
+                <tr>
+                    <td>tools</td>
+                    <td>code_interpreter</td>
+                    <td>Enables data analysis capabilities</td>
+                </tr>
+            </table>
+            
+            <h3>2.3 Assistant Instruction Engineering</h3>
+            <p>The most critical aspect of the assistant's performance is the instruction set that trains it for market sentiment analysis. These instructions define the assistant's behavior, output format, and analytical approach.</p>
+            
+            <div class="note">
+                <p><strong>Key Insight:</strong> Rather than fine-tuning a model (which would require significant data and resources), we use prompt engineering via the instructions parameter to create a specialized financial analyst assistant.</p>
+            </div>
+            
+            <h4>Instruction Structure</h4>
+            <p>The instructions are structured in multiple sections:</p>
+            
+            <ol>
+                <li><strong>Role Definition</strong>: Establishes the assistant as a market sentiment analyzer</li>
+                <li><strong>Analytical Framework</strong>: Details the specific aspects of market data to analyze</li>
+                <li><strong>Response Format</strong>: Specifies the exact JSON structure for consistent parsing</li>
+                <li><strong>Guidelines</strong>: Provides rules for handling uncertainty and maintaining objectivity</li>
+            </ol>
+            
+            <h4>Core Instruction Components</h4>
+            <pre><code>You are a Stock Market Sentiment Analyzer specializing in providing nuanced sentiment analysis
+and actionable insights based on technical indicators, price data, and machine learning predictions.
+
+When analyzing data:
+1. Examine all technical indicators (RSI, MACD, moving averages, etc.) and highlight key signals
+2. Analyze the recent price action and volume patterns
+3. Consider the ML prediction probability and confidence levels
+4. Provide an overall sentiment: POSITIVE, NEUTRAL, or NEGATIVE
+5. Summarize 3-5 key factors that support your sentiment conclusion
+6. Suggest potential trade considerations based on the horizon period
+7. Note any significant risks or contrary indicators that traders should be aware of</code></pre>
+            
+            <h4>Response Format Specification</h4>
+            <p>A critical aspect of the instructions is the detailed JSON structure specification that ensures consistent, parseable output:</p>
+            
+            <div class="json-preview">
+{
+    "symbol": "TICKER",
+    "sentiment": "POSITIVE/NEUTRAL/NEGATIVE",
+    "confidence": "HIGH/MEDIUM/LOW",
+    "horizon_days": 5,
+    "analysis_date": "YYYY-MM-DD",
+    "key_indicators": [
+        {"indicator": "RSI", "value": 68.5, "interpretation": "Approaching overbought but still bullish"},
+        {"indicator": "MACD", "value": "Positive and rising", "interpretation": "Strong upward momentum"}
+    ],
+    "price_action": {
+        "trend": "UPTREND/DOWNTREND/SIDEWAYS",
+        "key_levels": {
+            "support": [150.25, 148.60],
+            "resistance": [155.30, 158.75]
+        },
+        "pattern": "Breaking out of consolidation"
+    },
+    "ml_prediction": {
+        "direction": "UP/DOWN/NEUTRAL",
+        "probability": 0.75,
+        "interpretation": "Moderately confident bullish signal"
+    },
+    "summary": "Brief overall assessment of the stock's outlook",
+    "key_factors": [
+        "Factor 1 with explanation",
+        "Factor 2 with explanation",
+        "Factor 3 with explanation"
+    ],
+    "risks": [
+        "Risk 1 with explanation",
+        "Risk 2 with explanation"
+    ],
+    "trade_considerations": "Specific considerations for traders based on the data"
+}
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>3. Data Processing & Communication Flow</h2>
+            
+            <h3>3.1 Thread Management</h3>
+            <p>The Assistants API uses a thread-based conversational model. For each sentiment analysis, the system:</p>
+            <ol>
+                <li>Creates a new conversation thread</li>
+                <li>Adds a message containing preprocessed market data</li>
+                <li>Initiates a run with the assistant</li>
+                <li>Polls for run completion</li>
+                <li>Retrieves and processes the response</li>
+            </ol>
+            
+            <div class="diagram">
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  Create Thread  │────▶│  Create Message │────▶│   Start Run     │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+                                                         │
+┌─────────────────┐     ┌─────────────────┐             │
+│ Process Results │◀────│  Get Messages   │◀────────────┘
+└─────────────────┘     └─────────────────┘
+</div>
+            
+            <h3>3.2 Data Preparation</h3>
+            <p>Before sending data to the assistant, the system transforms raw market data into a structured format that maximizes the assistant's analytical capabilities:</p>
+            
+            <h4>Preprocessing Steps:</h4>
+            <ol>
+                <li><strong>Data Selection</strong>: Filter to the most relevant time periods (e.g., last 30 days of price action)</li>
+                <li><strong>Technical Indicator Transformation</strong>: Format indicators with proper names and values</li>
+                <li><strong>ML Prediction Integration</strong>: Structure ML outputs for assistant consumption</li>
+                <li><strong>Message Formatting</strong>: Create a comprehensive prompt with clearly delineated data sections</li>
+            </ol>
+            
+            <div class="terminal">
+                <div class="terminal-header">
+                    <div class="terminal-dot red"></div>
+                    <div class="terminal-dot yellow"></div>
+                    <div class="terminal-dot green"></div>
+                </div>
+                <div class="terminal-content">
+# Example of data preparation message
+message = f"""
+Please analyze the following stock market data for {symbol} with a prediction horizon of {horizon_days} days.
+
+Recent Price Data (last 30 days):
+```json
+{price_data_json}
+```
+
+Technical Indicators:
+```json
+{json.dumps(technical_data, indent=2)}
+```
+
+Machine Learning Prediction:
+```json
+{json.dumps(ml_prediction, indent=2)}
+```
+
+Based on this data, provide a comprehensive sentiment analysis with your assessment of whether 
+the sentiment is POSITIVE, NEUTRAL, or NEGATIVE. Include key supporting indicators, potential 
+risks, and trading considerations for a {horizon_days}-day horizon.
+
+Format your response as a detailed JSON structure as described in your instructions.
+"""
+                </div>
+            </div>
+            
+            <h3>3.3 JSON Parsing & Validation</h3>
+            <p>After receiving the assistant's response, the system must extract and parse the JSON data:</p>
+            
+            <div class="terminal">
+                <div class="terminal-header">
+                    <div class="terminal-dot red"></div>
+                    <div class="terminal-dot yellow"></div>
+                    <div class="terminal-dot green"></div>
+                </div>
+                <div class="terminal-content">
+# JSON extraction from assistant response
+try:
+    # Try to parse the entire response as JSON first
+    sentiment_data = json.loads(response_text)
+except json.JSONDecodeError:
+    # If that fails, look for JSON inside code blocks
+    import re
+    json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
+    if json_match:
+        json_text = json_match.group(1)
+        sentiment_data = json.loads(json_text)
+    else:
+        # Last attempt - look for any text that looks like JSON
+        json_match = re.search(r'({.*})', response_text, re.DOTALL)
+        if json_match:
+            json_text = json_match.group(1)
+            sentiment_data = json.loads(json_text)
+        else:
+            raise Exception("Could not extract JSON from response")
+                </div>
+            </div>
+            
+            <div class="note">
+                <p><strong>Engineering Note:</strong> The system implements robust error handling and multiple fallback mechanisms for JSON extraction, as Assistant responses may sometimes wrap JSON in code blocks or include additional commentary.</p>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>4. HTML Report Generation</h2>
+            
+            <h3>4.1 Report Design Philosophy</h3>
+            <p>The HTML report is designed to be both informative and visually consistent with the application's retro-futuristic theme. Key design principles include:</p>
+            
+            <ul>
+                <li><strong>Visual Hierarchy</strong>: Most important information (sentiment, confidence) is immediately visible</li>
+                <li><strong>Thematic Consistency</strong>: Colors, fonts, and styling match the main application</li>
+                <li><strong>Interactive Elements</strong>: LED animations and glowing effects create a dynamic experience</li>
+                <li><strong>Responsive Layout</strong>: Report adapts to different screen sizes</li>
+            </ul>
+            
+            <h3>4.2 Dynamic Color Coding</h3>
+            <p>The report uses sentiment-based color coding to provide immediate visual feedback:</p>
+            
+            <table>
+                <tr>
+                    <th>Sentiment</th>
+                    <th>Color</th>
+                    <th>Hex Code</th>
+                </tr>
+                <tr>
+                    <td>POSITIVE</td>
+                    <td style="color: #39ff14">Neon Green</td>
+                    <td>#39ff14</td>
+                </tr>
+                <tr>
+                    <td>NEUTRAL</td>
+                    <td style="color: #e0fbfc">Light Cyan</td>
+                    <td>#e0fbfc</td>
+                </tr>
+                <tr>
+                    <td>NEGATIVE</td>
+                    <td style="color: #ff4d6d">Neon Red/Pink</td>
+                    <td>#ff4d6d</td>
+                </tr>
+                <tr>
+                    <td>ERROR</td>
+                    <td style="color: #ff69b4">Pink</td>
+                    <td>#ff69b4</td>
+                </tr>
+            </table>
+            
+            <h3>4.3 Technical Implementation</h3>
+            <p>The report generation process converts the JSON sentiment data into a formatted HTML document:</p>
+            
+            <ol>
+                <li><strong>HTML Template</strong>: Core structure with placeholders for dynamic content</li>
+                <li><strong>Dynamic Styling</strong>: CSS variables adjust based on sentiment</li>
+                <li><strong>Content Formatting</strong>: JSON fields are converted to appropriate HTML elements</li>
+                <li><strong>Temporary File Creation</strong>: HTML is saved to a temporary file</li>
+                <li><strong>Browser Display</strong>: System browser opens the HTML file</li>
+            </ol>
+            
+            <div class="note">
+                <p><strong>Implementation Detail:</strong> The system uses temporary files with unique names to allow multiple reports to be opened simultaneously without conflicts. These files are automatically cleaned up by the operating system's temporary file management.</p>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>5. UI Integration</h2>
+            
+            <h3>5.1 Tab-Based Integration</h3>
+            <p>The sentiment analysis module is integrated into the main application using a tab-based approach for minimal disruption to the existing UI:</p>
+            
+            <ol>
+                <li>Creates a new tab "Sentiment" alongside existing "Parameters" and "ML" tabs</li>
+                <li>Dynamically relocates existing UI elements to their respective tabs</li>
+                <li>Initializes sentiment controls in the new tab</li>
+            </ol>
+            
+            <h3>5.2 Interaction with Existing Components</h3>
+            <p>The sentiment module interacts with several existing application components:</p>
+            
+            <ul>
+                <li><strong>Data Fetcher</strong>: Accesses current stock data</li>
+                <li><strong>ML Prediction Service</strong>: Retrieves current ML predictions</li>
+                <li><strong>Technical Analysis</strong>: Uses calculated technical indicators</li>
+                <li><strong>LED System</strong>: Indicates processing state using existing LED components</li>
+                <li><strong>Logging System</strong>: Reports status and results to the console</li>
+            </ul>
+            
+            <h3>5.3 API Key Management</h3>
+            <p>The system provides multiple options for OpenAI API key management:</p>
+            
+            <ol>
+                <li><strong>Environment Variables</strong>: OPENAI_API_KEY can be set at system level</li>
+                <li><strong>Configuration File</strong>: API key can be stored in config.py</li>
+                <li><strong>UI Entry</strong>: Key can be entered directly in the application UI</li>
+            </ol>
+            
+            <p>For security, the key is masked when displayed in the UI, and the system validates the key before enabling the sentiment analysis functionality.</p>
+        </div>
+
+        <div class="section">
+            <h2>6. Performance Considerations</h2>
+            
+            <h3>6.1 Latency Management</h3>
+            <p>AI-based sentiment analysis introduces latency challenges that are handled through:</p>
+            
+            <ul>
+                <li><strong>Asynchronous Processing</strong>: UI remains responsive during analysis</li>
+                <li><strong>Status Indicators</strong>: Clear feedback on processing state</li>
+                <li><strong>Efficient Data Preparation</strong>: Only relevant data is sent to the API</li>
+            </ul>
+            
+            <h3>6.2 API Cost Optimization</h3>
+            <p>The system implements several strategies to minimize API costs:</p>
+            
+            <ul>
+                <li><strong>Assistant Reuse</strong>: The same assistant is reused across sessions</li>
+                <li><strong>Data Selection</strong>: Only essential data is included in requests</li>
+                <li><strong>Thread Management</strong>: New threads are created for each analysis to prevent context accumulation</li>
+            </ul>
+            
+            <h3>6.3 Error Resilience</h3>
+            <p>The system includes comprehensive error handling:</p>
+            
+            <ul>
+                <li><strong>API Connection Issues</strong>: Graceful handling of network problems</li>
+                <li><strong>Response Parsing Failures</strong>: Multiple fallback mechanisms for extracting JSON</li>
+                <li><strong>UI State Management</strong>: Consistent UI state even after errors</li>
+            </ul>
+            
+            <div class="note">
+                <p><strong>Operational Note:</strong> Typical analysis time ranges from 5-15 seconds depending on data complexity and OpenAI API load. This is communicated to users via status indicators and LED animations.</p>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>7. Future Enhancements</h2>
+            
+            <h3>7.1 Potential Improvements</h3>
+            <ul>
+                <li><strong>Historical Sentiment Tracking</strong>: Store and compare sentiment over time</li>
+                <li><strong>Sentiment Visualization</strong>: Add charts showing sentiment trends</li>
+                <li><strong>Multi-Asset Comparison</strong>: Compare sentiment across related stocks or sectors</li>
+                <li><strong>News Integration</strong>: Incorporate recent news articles into sentiment analysis</li>
+                <li><strong>Customizable Reports</strong>: Allow users to configure report content and appearance</li>
+            </ul>
+            
+            <h3>7.2 Technical Roadmap</h3>
+            <ol>
+                <li><strong>Response Caching</strong>: Cache recent analyses to reduce API calls</li>
+                <li><strong>Batch Processing</strong>: Enable analysis of multiple assets in one operation</li>
+                <li><strong>Custom Instructions</strong>: Allow users to modify assistant instructions for specialized analysis</li>
+                <li><strong>Enhanced Error Reporting</strong>: More detailed feedback on API issues</li>
+                <li><strong>Report Export</strong>: Save reports as PDF or other formats</li>
+            </ol>
+        </div>
+
+        <div class="footer">
+            <p>Stock Trading App | Market Sentiment Analysis Engineering Documentation</p>
+            <p>Version 1.0 | © 2025</p>
+            <div class="led-container">
+                <div class="led"></div>
+                <div class="led"></div>
+                <div class="led"></div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

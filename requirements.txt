@@ -1,8 +1,15 @@
-customtkinter>=5.0 # Use a recent version
-pandas>=1.5       # For data manipulation
-yfinance>=0.2     # For fetching stock data
-python-dotenv>=1.0 # For managing environment variables (like API keys)
-matplotlib>=3.5   # For plotting charts
-backtesting>=0.3  # For strategy backtesting framework
-TA-Lib            # For technical indicators like RSI, ATR (Requires C library install first!)
-ephem             # For potential future real lunar calculations (optional for now)
+customtkinter>=5.0
+pandas>=1.5
+yfinance>=0.2
+python-dotenv>=1.0
+matplotlib>=3.5
+backtesting>=0.3
+TA-Lib                    # Requires C library install first!
+ephem>=4.1
+scikit-learn>=1.0
+joblib>=1.1.0
+numpy>=1.20.0
+anthropic>=0.40           # Claude API (sentiment + AI trade decisions)
+alpaca-trade-api>=3.0     # Alpaca broker SDK for auto-trading
+requests>=2.28            # HTTP requests (Discord webhooks)
+pytz>=2023.0              # Timezone handling for market hours

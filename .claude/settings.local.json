@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git log:*)",
+      "Bash(grep:*)",
+      "Bash(wc:*)",
+      "Bash(C:/projects/stocker/.venv/Scripts/python.exe:*)"
+    ]
+  }
+}

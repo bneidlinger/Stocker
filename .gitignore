@@ -1,0 +1,89 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# ML models and data
+data/models/*
+!data/models/.gitkeep
+*.joblib
+*.pkl
+*.h5
+training_results/
+
+# Local development settings
+instance/
+.webassets-cache
+local_settings.py
+
+# API keys and secrets
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+config.local.py
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.bak
+*.tmp
+*~
+*.cache
+*.csv
+*.xlsx
+*.xls

@@ -5,6 +5,8 @@ import customtkinter as ctk
 from gui.app import App
 import os
 from dotenv import load_dotenv
+from config import ML_MODEL_DIR
+from data.data_source_factory import DataSourceFactory
 
 # Load environment variables (optional, good practice for API keys)
 load_dotenv()
@@ -16,6 +18,10 @@ ctk.set_appearance_mode("Dark")
 # We can create custom themes later, for now let's use dark-blue
 # and override colors for the Miami Vice / Retro Fallout feel.
 ctk.set_default_color_theme("dark-blue")
+
+# --- Ensure Directories Exist ---
+# Create models directory if it doesn't exist
+os.makedirs(ML_MODEL_DIR, exist_ok=True)
 
 # --- Main Application ---
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 # config.py
 # Configuration settings for the application
 
+import os
+
 # List of stock symbols to track/analyze
 # AMZN, NVDA, META, PLTR + AAPL, TSLA
 SYMBOLS = ["AMZN", "NVDA", "META", "PLTR", "AAPL", "TSLA"]
@@ -29,6 +31,45 @@ REC_BBANDS_PERIOD = 20
 REC_BBANDS_STDDEV = 2.0
 REC_ADX_PERIOD = 14
 REC_ADX_THRESHOLD = 25
+
+# --- Alpha Vantage Configuration ---
+ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "")
+USE_ALPHA_VANTAGE = True   # Set to True to use Alpha Vantage instead of yfinance
+ALPHA_VANTAGE_CALL_LIMIT_PER_MINUTE = 5  # Free tier limit
+ALPHA_VANTAGE_CALL_LIMIT_PER_DAY = 500   # Free tier limit
+
+# Alpha Vantage Intraday Settings
+INTRADAY_INTERVALS = ["1min", "5min", "15min", "30min", "60min"]
+DEFAULT_INTRADAY_INTERVAL = "5min"  # Default interval for intraday data
+
+# --- Claude Configuration (replaces OpenAI) ---
+CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL = "claude-sonnet-4-20250514"
+SENTIMENT_ENABLED = True
+
+# --- Alpaca Configuration ---
+ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
+ALPACA_API_SECRET = os.environ.get("ALPACA_API_SECRET", "")
+ALPACA_BASE_URL_PAPER = "https://paper-api.alpaca.markets"
+ALPACA_BASE_URL_LIVE = "https://api.alpaca.markets"
+ALPACA_PAPER_TRADING = True
+
+# --- Auto-Trader Defaults ---
+AUTO_TRADER_DEFAULT_BUDGET = 100.0
+AUTO_TRADER_CYCLE_MINUTES = 60
+AUTO_TRADER_MAX_POSITION_PCT = 0.25
+AUTO_TRADER_STOP_LOSS_PCT = 0.05
+
+# --- Discord Configuration ---
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
+# --- ML Configuration ---
+ML_MODEL_DIR = 'data/models'
+ML_DEFAULT_MODEL = 'random_forest'
+ML_DEFAULT_HORIZON = 5
+ML_TRAIN_TEST_SPLIT = 0.2
+ML_ENABLE_HYBRID = True       # Enable hybrid ML + Technical Analysis recommendations
+ML_HYBRID_WEIGHT = 0.5        # Default weight for ML vs TA (0.0 = all TA, 1.0 = all ML)
 
 # --- Location for Astronomical Calculations (Ephem) ---
 # Used for RealMoonStrategy - Coordinates for Apple Valley, MN
@@ -73,14 +114,33 @@ COLOR_LED_DATA_ON = "#E1E100" # Slightly less intense Yellow
 COLOR_LED_COM_ON = "#00C2C2" # Slightly less intense Cyan
 # ERR LED uses PWR colors
 
-# --- Recommendation Matrix Colors --- ADD THESE LINES ---
+# --- Recommendation Matrix Colors ---
 COLOR_REC_SELL = "#FF4136"       # Red
 COLOR_REC_WEAK_SELL = "#FF851B"  # Orange
 COLOR_REC_HOLD = "#AAAAAA"       # Gray
 COLOR_REC_WEAK_BUY = "#AFFFAD"   # Light Green
 COLOR_REC_BUY = "#2ECC40"        # Green
 COLOR_REC_DEFAULT = "#00FF00"    # Default matrix green
-# --- END ADDED LINES ---
+
+# --- ML LED Colors ---
+COLOR_LED_ML_ON = "#7D26CD"      # Purple for ML activity
+COLOR_LED_ML_BORDER = "#10101a"  # Same border as other LEDs
+
+# --- Auto-Trader LED Colors ---
+COLOR_LED_AUTO_ON = "#FF6EC7"    # Hot pink for auto-trader activity
+COLOR_LED_AI_ON = "#00BFFF"      # Deep sky blue for AI decisions
+
+# --- Kill Switch Colors ---
+COLOR_KILL_SWITCH = "#FF0000"        # Pure red
+COLOR_KILL_SWITCH_HOVER = "#CC0000"  # Darker red
+
+# --- ML Visualization Colors ---
+COLOR_ML_FEATURE_BAR = "#7D26CD"  # Purple for feature importance bars
+COLOR_ML_PREDICTION_UP = "#2ECC40"  # Green for up predictions
+COLOR_ML_PREDICTION_DOWN = "#FF4136"  # Red for down predictions
+COLOR_ML_CONFIDENCE_HIGH = "#39ff14"  # Neon Green for high confidence
+COLOR_ML_CONFIDENCE_MED = "#FFDC00"   # Yellow for medium confidence
+COLOR_ML_CONFIDENCE_LOW = "#FF851B"   # Orange for low confidence
 
 # --- Fonts ---
 # Using a common monospace font for the console feel
@@ -90,4 +150,3 @@ FONT_SIZE_LARGE = 16
 FONT_SIZE_TEXTBOX = 14 # Added specific font size for the output textbox
 FONT_SIZE_LED = 10 # Smaller font for LED labels
 # FONT_SIZE_RECOMMENDATION = 18 # No longer needed for label
-

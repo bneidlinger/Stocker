@@ -73,7 +73,7 @@ class RealMoonStrategy(Strategy):
                 if not self.position.is_long:
                     self.buy(size=self.trade_size_percent)
 
-                    # --- Sell Logic ---
+            # --- Sell Logic ---
             elif sell_trigger_day <= days_since_full < (sell_trigger_day + sell_window):
                 if self.position.is_long:
                     self.position.close()
