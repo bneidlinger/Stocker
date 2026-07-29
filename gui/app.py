@@ -55,7 +55,6 @@ from config import (SYMBOLS, DEFAULT_DATA_PERIOD, DEFAULT_DATA_INTERVAL,
                     )
 
 # Local Application Imports
-from data.alpha_vantage_fetcher import AlphaVantageDataFetcher
 from gui.widgets.vintage_indicators import WornLED
 from gui.widgets.dot_matrix import MatrixText # Import MatrixText
 from trading.backtester import run_backtest
@@ -166,7 +165,6 @@ class App(ctk.CTk):
         self.latest_price = None
         self._loading_data = False # Flag used by clear_display
         self._predicting_ml = False # Flag used by generate_ml_prediction
-        self.economic_data = None # Economic indicators for ML enhancement
 
         # --- TA State ---
         self.talib_module = None # Loaded TA-Lib module
@@ -418,18 +416,6 @@ class App(ctk.CTk):
             fg_color=COLOR_BUTTON, hover_color=COLOR_BUTTON_HOVER
         )
         self.fetch_button.pack(side="left", padx=(0, 10))
-        
-        # Alpha Vantage Advanced Features Option
-        if isinstance(self.data_fetcher, AlphaVantageDataFetcher):
-            self.av_advanced_var = ctk.BooleanVar(value=False)
-            self.av_advanced_checkbox = ctk.CTkCheckBox(
-                self.controls_frame, text="Use AV Indicators", 
-                variable=self.av_advanced_var,
-                font=self.font_normal, text_color=COLOR_FOREGROUND,
-                fg_color=COLOR_BUTTON, hover_color=COLOR_BUTTON_HOVER,
-                command=self._toggle_av_advanced_features
-            )
-            self.av_advanced_checkbox.pack(side="left", padx=(0, 20))
 
         # Kill Switch Button (far right of controls frame, always visible)
         self.kill_switch_button = ctk.CTkButton(
@@ -771,32 +757,11 @@ class App(ctk.CTk):
 
         try:
             # --- Fetch Data ---
-            # Pass fetch_indicators=True if fetch_advanced_features is set on the data_fetcher
-            fetch_indicators = hasattr(self.data_fetcher, 'fetch_advanced_features') and self.data_fetcher.fetch_advanced_features
-            
-            # Get economic data if we have Alpha Vantage fetcher and advanced features enabled
-            economic_data = None
-            if isinstance(self.data_fetcher, AlphaVantageDataFetcher) and fetch_indicators:
-                try:
-                    economic_data = self.data_fetcher.get_economic_indicators()
-                    if economic_data:
-                        self.log_message(f"Fetched {len(economic_data)} economic indicators for ML enhancement", tag="weak_positive")
-                except Exception as e:
-                    print(f"Error fetching economic indicators: {e}")
-            
-            fetch_kwargs = dict(
+            self.current_data = self.data_fetcher.get_historical_data(
+                self.current_symbol,
                 period=DEFAULT_DATA_PERIOD,
                 interval=DEFAULT_DATA_INTERVAL,
             )
-            if isinstance(self.data_fetcher, AlphaVantageDataFetcher):
-                fetch_kwargs['fetch_indicators'] = fetch_indicators
-            self.current_data = self.data_fetcher.get_historical_data(
-                self.current_symbol,
-                **fetch_kwargs
-            )
-            
-            # Store economic data for ML use
-            self.economic_data = economic_data
 
             if self.current_data is not None and not self.current_data.empty:
                 # --- Process Data ---
@@ -1102,9 +1067,8 @@ class App(ctk.CTk):
             except ValueError: threshold = 0.01 # Fallback
 
             self.ml_prediction = self.ml_service.predict(
-                self.current_data.copy(), 
-                target_threshold=threshold,
-                economic_data=self.economic_data
+                self.current_data.copy(),
+                target_threshold=threshold
             )
 
             if 'error' in self.ml_prediction:
@@ -1151,8 +1115,7 @@ class App(ctk.CTk):
 
             hybrid_result = self.ml_service.get_hybrid_recommendation(
                 df=self.current_data.copy(), technical_score=self.latest_technical_score,
-                adx_value=self.latest_adx, target_threshold=threshold,
-                economic_data=self.economic_data
+                adx_value=self.latest_adx, target_threshold=threshold
             )
 
             self.log_message(f"Hybrid Recommendation: {hybrid_result.get('recommendation')}")
@@ -1202,8 +1165,7 @@ class App(ctk.CTk):
             results = self.ml_service.train_model(
                 symbol=symbol_used, df=self.current_data.copy(), model_type=selected_model_type,
                 prediction_type='classification', prediction_horizon=horizon,
-                test_size=test_size, target_threshold=threshold,
-                economic_data=self.economic_data
+                test_size=test_size, target_threshold=threshold
             )
 
             # Process results
@@ -1412,7 +1374,6 @@ class App(ctk.CTk):
         self.current_data = None; self.plotted_data = None; self.latest_price = None
         self.latest_ta_results = None; self.latest_recommendation = " "; self.latest_technical_score = 0.0; self.latest_adx = None # Init rec to blank
         self.ml_model_loaded = False; self.ml_prediction = None; self.latest_feature_importances = None
-        self.economic_data = None # Reset economic data on symbol change
         self._update_feature_importance_button_state()
         self.set_led_state("CPU", "off"); self.set_led_state("ERR", "off"); self.set_led_state("ML", "off") # Turn ML off on symbol change
         self._highlight_chart_period_button("ALL")
@@ -1696,21 +1657,6 @@ class App(ctk.CTk):
             state = "normal" if self.ml_model_loaded and self.latest_feature_importances else "disabled"
             try: self.show_features_button.configure(state=state)
             except tk.TclError as e: print(f"Error updating feature button state: {e}")
-            
-    def _toggle_av_advanced_features(self):
-        """Toggles the advanced features option for Alpha Vantage."""
-        if hasattr(self, 'av_advanced_var') and hasattr(self, 'data_fetcher'):
-            use_advanced = self.av_advanced_var.get()
-            if hasattr(self.data_fetcher, 'fetch_advanced_features'):
-                self.data_fetcher.fetch_advanced_features = use_advanced
-                print(f"Alpha Vantage advanced features {'enabled' if use_advanced else 'disabled'}")
-                
-                # Show a notification to the user
-                if use_advanced:
-                    self.log_message("Alpha Vantage indicators will be fetched on next data load.", tag="weak_positive")
-                    self.log_message("Note: This increases API usage and may hit rate limits.", tag="weak_negative")
-                else:
-                    self.log_message("Alpha Vantage indicators disabled.", tag="neutral")
 
 
     def _get_feature_explanation(self, feature_name: str) -> str:

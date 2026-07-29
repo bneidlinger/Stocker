@@ -6,7 +6,6 @@ from gui.app import App
 import os
 from dotenv import load_dotenv
 from config import ML_MODEL_DIR
-from data.data_source_factory import DataSourceFactory
 
 # Load environment variables (optional, good practice for API keys)
 load_dotenv()

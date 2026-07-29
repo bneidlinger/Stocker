@@ -32,16 +32,6 @@ REC_BBANDS_STDDEV = 2.0
 REC_ADX_PERIOD = 14
 REC_ADX_THRESHOLD = 25
 
-# --- Alpha Vantage Configuration ---
-ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "")
-USE_ALPHA_VANTAGE = True   # Set to True to use Alpha Vantage instead of yfinance
-ALPHA_VANTAGE_CALL_LIMIT_PER_MINUTE = 5  # Free tier limit
-ALPHA_VANTAGE_CALL_LIMIT_PER_DAY = 500   # Free tier limit
-
-# Alpha Vantage Intraday Settings
-INTRADAY_INTERVALS = ["1min", "5min", "15min", "30min", "60min"]
-DEFAULT_INTRADAY_INTERVAL = "5min"  # Default interval for intraday data
-
 # --- Claude Configuration (replaces OpenAI) ---
 CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = "claude-sonnet-4-20250514"

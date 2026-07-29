@@ -145,10 +145,13 @@ class DataFetcher:
         for attempt in range(self.max_retries):
             try:
                 ticker = yf.Ticker(symbol)
-                # Try fast_info first
-                data = ticker.fast_info
-                price = data.get('last_price')  # Or 'regularMarketPrice'
-                
+                # Try fast_info first (attribute access works across yfinance versions;
+                # the dict-style keys changed to camelCase in yfinance 1.x)
+                try:
+                    price = ticker.fast_info.last_price
+                except (AttributeError, KeyError):
+                    price = None
+
                 if price:
                     # Successfully got price via fast_info
                     price = float(price)
@@ -162,12 +165,13 @@ class DataFetcher:
                     # Fallback: get last closing price from recent history
                     hist = ticker.history(period="2d")  # Get 2 days to ensure we get last close
                     if not hist.empty:
-                        # Ensure 'Close' column exists before accessing
+                        # Use the last non-NaN close (today's partial row can be NaN)
                         fallback_price = None
-                        if 'Close' in hist.columns:
-                            fallback_price = hist['Close'].iloc[-1]
-                        elif 'close' in hist.columns:  # check lowercase too
-                            fallback_price = hist['close'].iloc[-1]
+                        close_col = 'Close' if 'Close' in hist.columns else ('close' if 'close' in hist.columns else None)
+                        if close_col is not None:
+                            valid_closes = hist[close_col].dropna()
+                            if not valid_closes.empty:
+                                fallback_price = float(valid_closes.iloc[-1])
 
                         if fallback_price is not None:
                             print(f"Fallback successful: Using last closing price for {symbol}: {fallback_price}")

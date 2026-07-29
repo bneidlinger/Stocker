@@ -47,8 +47,7 @@ class MlPredictionService:
         self.loaded_model_info = None # Stores metadata about the currently loaded model
 
     def prepare_data(self, df: pd.DataFrame, prediction_horizon: int = 5,
-                     target_threshold: float = 0.01, 
-                     economic_data: Optional[Dict[str, pd.DataFrame]] = None) -> Optional[pd.DataFrame]:
+                     target_threshold: float = 0.01) -> Optional[pd.DataFrame]:
         """
         Prepare data for ML by engineering features and adding target variables.
 
@@ -56,7 +55,6 @@ class MlPredictionService:
             df: DataFrame with OHLCV data (lowercase columns expected).
             prediction_horizon: Horizon for target variable calculation in days.
             target_threshold: Threshold for classifying UP/DOWN vs NEUTRAL.
-            economic_data: Optional economic indicators to include in feature engineering.
 
         Returns:
             DataFrame with engineered features and target variables, or None if error.
@@ -65,13 +63,11 @@ class MlPredictionService:
             print("Error: Cannot prepare data, input DataFrame is empty.")
             return None
 
-        # print(f"Preparing data: Engineering features...") # Verbose logging
         # Engineer features (assuming engineer_features handles NaN/dropna)
         features_df = self.feature_engineer.engineer_features(
-            df, 
+            df,
             with_date_features=True,
-            min_required_samples=50,  
-            economic_data=economic_data
+            min_required_samples=50
         )
         
         if features_df is None or features_df.empty:
@@ -100,8 +96,7 @@ class MlPredictionService:
 
     def train_model(self, symbol: str, df: pd.DataFrame, model_type: str = 'random_forest',
                     prediction_type: str = 'classification', prediction_horizon: int = 5,
-                    test_size: float = 0.2, target_threshold: float = 0.01,
-                    economic_data: Optional[Dict[str, pd.DataFrame]] = None) -> Dict:
+                    test_size: float = 0.2, target_threshold: float = 0.01) -> Dict:
         """
         Train an ML model, evaluate it, and save it.
 
@@ -113,7 +108,6 @@ class MlPredictionService:
             prediction_horizon: Horizon for predictions in days.
             test_size: Portion of data to use for testing (e.g., 0.2 for 20%).
             target_threshold: Threshold for classifying UP/DOWN vs NEUTRAL (used in data prep).
-            economic_data: Optional dictionary of economic indicators to include in feature engineering.
 
         Returns:
             Dictionary containing 'model_info', 'train_results', and 'metrics'.
@@ -127,10 +121,9 @@ class MlPredictionService:
 
         # 1. Prepare Data (including target variable)
         prepared_data = self.prepare_data(
-            df, 
-            prediction_horizon=prediction_horizon, 
-            target_threshold=target_threshold,
-            economic_data=economic_data
+            df,
+            prediction_horizon=prediction_horizon,
+            target_threshold=target_threshold
         )
         if prepared_data is None or prepared_data.empty:
             # Logged in prepare_data
@@ -262,8 +255,7 @@ class MlPredictionService:
         return True
 
     # --- predict method with target_threshold fix ---
-    def predict(self, df: pd.DataFrame, target_threshold: float = 0.01, 
-               economic_data: Optional[Dict[str, pd.DataFrame]] = None) -> Dict:
+    def predict(self, df: pd.DataFrame, target_threshold: float = 0.01) -> Dict:
         """
         Make predictions using the currently loaded model.
         Requires a model to be loaded first via load_model_for_symbol or train_model.
@@ -272,7 +264,6 @@ class MlPredictionService:
             df: DataFrame with OHLCV data (must contain necessary history for feature eng).
             target_threshold (float): The significance threshold used for preparing data
                                       (ensures consistency, though not directly used in prediction logic itself).
-            economic_data: Optional economic indicators to include in feature engineering.
 
         Returns:
             Dictionary with prediction results (direction, confidence, etc.).
@@ -293,8 +284,7 @@ class MlPredictionService:
         prepared_data = self.prepare_data(
             df,
             prediction_horizon=self.loaded_model_info.get('horizon', 5),
-            target_threshold=target_threshold, # Pass the threshold
-            economic_data=economic_data
+            target_threshold=target_threshold
             )
         if prepared_data is None or prepared_data.empty:
             raise ValueError("Failed to prepare data for prediction (feature engineering failed).")
@@ -308,6 +298,8 @@ class MlPredictionService:
         missing_features = [f for f in required_features if f not in prepared_data.columns]
         if missing_features:
             print(f"Warning: Adding missing features with zero values: {missing_features}")
+            print("Loaded model uses an outdated feature set -- retraining is recommended "
+                  "(Train ML Model button) for accurate predictions.")
             # Add missing features with zeros
             for feature in missing_features:
                 prepared_data[feature] = 0.0
@@ -396,8 +388,7 @@ class MlPredictionService:
 
     def get_hybrid_recommendation(self, df: pd.DataFrame, technical_score: float,
                                   adx_value: Optional[float] = None,
-                                  target_threshold: float = 0.01,
-                                  economic_data: Optional[Dict[str, pd.DataFrame]] = None) -> Dict: # Added parameters
+                                  target_threshold: float = 0.01) -> Dict:
         """
         Generate a hybrid recommendation combining ML predictions with technical indicators.
         Assumes an ML model has been loaded and a prediction can be made.
@@ -425,9 +416,8 @@ class MlPredictionService:
             # Use the predict method which uses the currently loaded model
             # Pass the threshold and economic data for consistent data prep
             ml_prediction = self.predict(
-                df, 
-                target_threshold=target_threshold,
-                economic_data=economic_data
+                df,
+                target_threshold=target_threshold
             )
             if 'error' in ml_prediction:
                  raise ValueError(f"ML Prediction failed: {ml_prediction['error']}")

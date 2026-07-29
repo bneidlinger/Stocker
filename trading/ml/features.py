@@ -70,13 +70,6 @@ class FeatureEngineer:
             if len(result) > 20:
                 result['relative_volume'] = result['volume'] / result['volume'].rolling(20).mean()
         
-        # Add capital gains column (zero values for compatibility with previously trained models)
-        result['capital gains'] = 0.0
-        
-        # Use additional Alpha Vantage specific features if available
-        if 'implied_dividend_adjustment' in df.columns:
-            result['implied_dividend_adjustment'] = df['implied_dividend_adjustment']
-
         return result
 
     @staticmethod
@@ -181,8 +174,8 @@ class FeatureEngineer:
         return result
 
     @staticmethod
-    def engineer_features(df: pd.DataFrame, with_date_features: bool = True, min_required_samples: int = 100, 
-                          economic_data: Optional[Dict[str, pd.DataFrame]] = None) -> pd.DataFrame:
+    def engineer_features(df: pd.DataFrame, with_date_features: bool = True,
+                          min_required_samples: int = 100) -> pd.DataFrame:
         """
         Complete feature engineering process.
 
@@ -190,7 +183,6 @@ class FeatureEngineer:
             df: DataFrame with at least OHLCV data
             with_date_features: Whether to include date-based features
             min_required_samples: Minimum number of samples required after processing
-            economic_data: Optional dictionary of economic indicators to add to features
 
         Returns:
             DataFrame with all engineered features
@@ -227,64 +219,7 @@ class FeatureEngineer:
                     result[col].fillna(0, inplace=True)
                 else:
                     result[col].fillna(median_value, inplace=True)
-                    
-        # Add economic indicators if provided
-        if economic_data and isinstance(result.index, pd.DatetimeIndex):
-            print("Adding economic indicators to features...")
-            
-            # Process each economic indicator
-            for indicator_name, indicator_df in economic_data.items():
-                if indicator_df is None or indicator_df.empty:
-                    continue
-                    
-                try:
-                    # Ensure index is datetime
-                    if not isinstance(indicator_df.index, pd.DatetimeIndex):
-                        print(f"Warning: Economic indicator {indicator_name} doesn't have DatetimeIndex. Skipping.")
-                        continue
-                    
-                    # Get the latest value for each date in our price data
-                    for col in indicator_df.columns:
-                        if col in ['date']:  # Skip index/metadata columns
-                            continue
-                            
-                        # Create a resampled version aligned to price data
-                        feature_name = f"economic_{indicator_name.lower()}_{col.lower()}"
-                        
-                        # Resample to daily frequency, forward filling values
-                        # This ensures we have a value for each trading day
-                        daily_series = indicator_df[col].resample('D').ffill()
-                        
-                        # Merge with our price data by aligning on dates
-                        for date in result.index:
-                            date_str = date.strftime('%Y-%m-%d')
-                            # Find the latest available economic data point at or before this date
-                            available_dates = daily_series.index[daily_series.index <= date]
-                            if not available_dates.empty:
-                                latest_date = available_dates[-1]
-                                result.loc[date, feature_name] = daily_series.loc[latest_date]
-                            else:
-                                # No data available before this date
-                                result.loc[date, feature_name] = np.nan
-                        
-                        # Fill any NaN values
-                        if result[feature_name].isna().any():
-                            # Use forward fill first
-                            result[feature_name] = result[feature_name].ffill()
-                            # Then use backward fill for initial NaNs
-                            result[feature_name] = result[feature_name].bfill()
-                            # Any remaining NaNs, use median or 0
-                            median_value = result[feature_name].median()
-                            if pd.isna(median_value):
-                                result[feature_name].fillna(0, inplace=True)
-                            else:
-                                result[feature_name].fillna(median_value, inplace=True)
-                                
-                    print(f"Added {indicator_name} features")
-                        
-                except Exception as e:
-                    print(f"Error adding economic indicator {indicator_name}: {e}")
-        
+
         # Drop any remaining full NaN rows if absolutely necessary
         if result.isna().any().any():
             print("Warning: Some NaN values remained after filling methods.")
