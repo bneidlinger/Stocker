@@ -2,6 +2,8 @@
 # Service layer for ML predictions
 
 import os
+import threading
+from functools import wraps
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -10,8 +12,22 @@ from typing import Dict, List, Tuple, Optional
 # Assuming FeatureEngineer and ModelManager are correctly imported
 from trading.ml.features import FeatureEngineer
 from trading.ml.models import ModelManager
-# Import config if needed for default threshold, or define it here
-# from config import ML_DEFAULT_THRESHOLD # Example if you add it to config
+
+
+def _locked(method):
+    """Serialize access to the shared model/scaler state.
+
+    The service instance is shared between the Tk thread (train/predict from
+    the GUI) and the auto-trader's background thread (predict each cycle);
+    without this, a train can refit the scaler mid-predict. RLock so locked
+    methods may call each other (get_hybrid_recommendation -> predict).
+    """
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
 
 class MlPredictionService:
     """
@@ -43,8 +59,8 @@ class MlPredictionService:
         print("ML Prediction Service Initialized.") # Log initialization
         self.model_manager = ModelManager(model_dir=model_dir)
         self.feature_engineer = FeatureEngineer()
-        # self.current_symbol = None # State like current symbol is better managed by the calling UI (App)
         self.loaded_model_info = None # Stores metadata about the currently loaded model
+        self._lock = threading.RLock() # Guards model/scaler state across threads
 
     def prepare_data(self, df: pd.DataFrame, prediction_horizon: int = 5,
                      target_threshold: float = 0.01) -> Optional[pd.DataFrame]:
@@ -94,6 +110,7 @@ class MlPredictionService:
 
         return features_df
 
+    @_locked
     def train_model(self, symbol: str, df: pd.DataFrame, model_type: str = 'random_forest',
                     prediction_type: str = 'classification', prediction_horizon: int = 5,
                     test_size: float = 0.2, target_threshold: float = 0.01) -> Dict:
@@ -210,6 +227,7 @@ class MlPredictionService:
 
         return results
 
+    @_locked
     def load_model_for_symbol(self, symbol: str, prediction_horizon: int = 5, model_type: str = 'classification') -> bool:
         """
         Load the latest pre-trained model for a symbol, horizon, and type.
@@ -254,7 +272,7 @@ class MlPredictionService:
         # print(f"Successfully loaded model: {self.loaded_model_info.get('model_class_name')}") # Logging handled by App
         return True
 
-    # --- predict method with target_threshold fix ---
+    @_locked
     def predict(self, df: pd.DataFrame, target_threshold: float = 0.01) -> Dict:
         """
         Make predictions using the currently loaded model.
@@ -386,6 +404,7 @@ class MlPredictionService:
         # Returns the dictionary stored during load or train
         return self.loaded_model_info
 
+    @_locked
     def get_hybrid_recommendation(self, df: pd.DataFrame, technical_score: float,
                                   adx_value: Optional[float] = None,
                                   target_threshold: float = 0.01) -> Dict:

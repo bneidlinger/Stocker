@@ -90,31 +90,32 @@ class FeatureEngineer:
         result = df.copy()
         close = result['close']
 
-        # Simple Moving Averages (SMA)
+        # NOTE: absolute price-level series (SMA/EMA/band values) are computed
+        # as intermediates only. Emitting them as features lets the model latch
+        # onto the price regime instead of learning transferable structure, so
+        # only scale-free relatives are kept.
+
+        # Distance from Simple Moving Averages (%)
         for period in [5, 10, 20, 50, 200]:
             if len(result) > period:
-                result[f'sma_{period}'] = close.rolling(window=period).mean()
+                sma = close.rolling(window=period).mean()
+                result[f'close_to_sma_{period}'] = (close / sma - 1) * 100
 
-                # Distance from SMA (%)
-                result[f'close_to_sma_{period}'] = (close / result[f'sma_{period}'] - 1) * 100
-
-        # Exponential Moving Averages (EMA)
+        # Distance from Exponential Moving Averages (%)
         for period in [5, 10, 20, 50, 200]:
             if len(result) > period:
-                result[f'ema_{period}'] = close.ewm(span=period, adjust=False).mean()
+                ema = close.ewm(span=period, adjust=False).mean()
+                result[f'close_to_ema_{period}'] = (close / ema - 1) * 100
 
-                # Distance from EMA (%)
-                result[f'close_to_ema_{period}'] = (close / result[f'ema_{period}'] - 1) * 100
-
-        # Bollinger Bands (20, 2)
+        # Bollinger Bands (20, 2) -- width and position only
         if len(result) > 20:
             ma = close.rolling(window=20).mean()
             std = close.rolling(window=20).std()
-            result['bb_upper'] = ma + (std * 2)
-            result['bb_lower'] = ma - (std * 2)
-            result['bb_width'] = (result['bb_upper'] - result['bb_lower']) / ma
+            bb_upper = ma + (std * 2)
+            bb_lower = ma - (std * 2)
+            result['bb_width'] = (bb_upper - bb_lower) / ma
             # Position within BB (0 = lower band, 1 = upper band)
-            result['bb_pos'] = (close - result['bb_lower']) / (result['bb_upper'] - result['bb_lower'])
+            result['bb_pos'] = (close - bb_lower) / (bb_upper - bb_lower)
 
         # RSI (using Simple Method with pandas)
         if len(result) > 14:
@@ -152,11 +153,12 @@ class FeatureEngineer:
 
         result = df.copy()
 
-        # Extract date components
+        # Extract date components. Deliberately no 'year': it is monotone over
+        # a chronological train/test split, so the model would memorize price
+        # regimes by year instead of learning transferable patterns.
         result['day_of_week'] = result.index.dayofweek
         result['day_of_month'] = result.index.day
         result['month'] = result.index.month
-        result['year'] = result.index.year
         result['quarter'] = result.index.quarter
 
         # Is month start/end
@@ -204,26 +206,15 @@ class FeatureEngineer:
         if with_date_features and isinstance(result.index, pd.DatetimeIndex):
             result = FeatureEngineer.add_date_features(result)
 
-        # --- Handle NaN values ---
-        # 1. Forward fill NaN values created by lagging features
+        # --- Handle NaN values (no lookahead) ---
+        # Forward fill only. Warm-up rows at the start (rolling windows, lagged
+        # returns) keep their NaNs and are dropped below. Backfill or median
+        # fills would leak future information into earlier rows.
         result = result.ffill()
-        
-        # 2. For any remaining NaNs (e.g., at the beginning), use backward fill with limit
-        result = result.bfill(limit=5)
-        
-        # 3. Any still remaining NaNs (rare edge cases), fill with column medians
-        for col in result.columns:
-            if result[col].isna().any():
-                median_value = result[col].median()
-                if pd.isna(median_value):  # If median is also NaN, use 0
-                    result[col].fillna(0, inplace=True)
-                else:
-                    result[col].fillna(median_value, inplace=True)
-
-        # Drop any remaining full NaN rows if absolutely necessary
-        if result.isna().any().any():
-            print("Warning: Some NaN values remained after filling methods.")
-            result = result.dropna()
+        incomplete_rows = int(result.isna().any(axis=1).sum())
+        if incomplete_rows:
+            print(f"Dropping {incomplete_rows} warm-up rows with incomplete features.")
+        result = result.dropna()
         
         # Final check if we have enough data after processing
         if len(result) < min_required_samples:

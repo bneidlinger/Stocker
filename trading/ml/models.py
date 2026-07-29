@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Union, Optional
 
 # scikit-learn imports (ensure these are present)
+from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.preprocessing import StandardScaler
@@ -66,13 +67,16 @@ class ModelManager:
                 f"Unknown model type '{model_type}'. Available models: {list(self.CLASSIFICATION_MODELS.keys())}")
 
         # --- Feature Scaling ---
-        # Fit the scaler ONLY on the training data
+        # Fresh scaler per training run, fitted ONLY on the training data
+        self.scaler = StandardScaler()
         X_train_scaled = self.scaler.fit_transform(X_train)
         print(f"Scaler fitted with {self.scaler.n_features_in_} features.")
 
         # --- Model Initialization ---
-        # Create a new instance for each training run
-        model = self.CLASSIFICATION_MODELS[model_type]
+        # clone() the registry entry: the class-level instances are templates
+        # and must never be fitted directly (fitting them would share state
+        # across training runs and ModelManager instances)
+        model = clone(self.CLASSIFICATION_MODELS[model_type])
         print(f"Training classification model: {type(model).__name__}")
 
         # --- Model Training ---
