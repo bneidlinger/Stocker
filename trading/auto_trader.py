@@ -4,10 +4,9 @@
 import time
 import threading
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Callable
 
-import pytz
 import pandas as pd
 
 from broker.alpaca_client import AlpacaBrokerClient
@@ -15,9 +14,6 @@ from ai.claude_client import ClaudeAIClient
 from notifications.discord_notifier import DiscordNotifier
 from trading.auto_trader_config import AutoTraderConfig
 from trading.ml.service import MlPredictionService
-
-
-ET = pytz.timezone("US/Eastern")
 
 
 class AutoTrader:
@@ -463,9 +459,10 @@ class AutoTrader:
             if self.broker.is_market_open:
                 return True, 0
 
+            # next_market_open is timezone-aware; compare with aware UTC now so
+            # the wait is correct regardless of the local wall clock
             next_open = self.broker.next_market_open
-            now = datetime.now()
-            wait = max((next_open - now).total_seconds(), 0)
+            wait = max((next_open - datetime.now(timezone.utc)).total_seconds(), 0)
             return False, wait
         except Exception as e:
             print(f"Market hours check failed: {e}")
