@@ -7,9 +7,10 @@ A retro-themed stock trading application with backtesting, machine learning pred
 ## Features
 
 **Market Data & Charting**
-- Historical OHLCV data via yfinance or Alpha Vantage
+- Historical OHLCV data via yfinance (auto-adjusted for splits/dividends), cached locally
 - Interactive charts with adjustable time periods (1M to ALL)
 - Custom and preset stock symbol support
+- All heavy work (fetch, backtest, ML training, sentiment) runs on background threads -- the UI never freezes
 
 **Strategy Backtesting**
 - 10 built-in strategies: SMA Crossover, RSI, MACD, Bollinger Bands, Volatility Breakout, Ichimoku Cloud, Donchian Channel, Day of Week, and two moon phase strategies
@@ -71,9 +72,6 @@ ANTHROPIC_API_KEY=sk-ant-...
 ALPACA_API_KEY=PK...
 ALPACA_API_SECRET=...
 
-# Optional - Alpha Vantage data source (alternative to yfinance)
-ALPHA_VANTAGE_API_KEY=...
-
 # Optional - Discord trade notifications
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
@@ -95,7 +93,7 @@ The app runs without TA-Lib, but RSI/MACD/Bollinger/ADX strategies and the recom
 ```
 stocker/
   main.py                          # Entry point
-  config.py                        # All configuration, colors, API keys
+  config.py                        # Configuration and theme (keys come from env vars)
   gui/
     app.py                         # Main window (monolithic App class)
     auto_trader_tab.py             # Auto-Trade tab UI
@@ -104,8 +102,8 @@ stocker/
       vintage_indicators.py        # WornLED, NeonLight widgets
   data/
     data_fetcher.py                # yfinance fetcher with caching
-    alpha_vantage_fetcher.py       # Alpha Vantage fetcher
-    data_source_factory.py         # Factory to select data source
+    data_source_factory.py         # Factory (yfinance today; extensible)
+  tests/                           # pytest suite (no network, no Tk)
   trading/
     backtester.py                  # backtesting.py wrapper
     auto_trader.py                 # AI auto-trading engine
@@ -129,7 +127,7 @@ stocker/
 ### Data Flow
 
 ```
-Symbol selected -> DataFetcher (yfinance/Alpha Vantage) -> OHLCV DataFrame
+Symbol selected -> DataFetcher (yfinance) -> OHLCV DataFrame
   -> Chart display
   -> Technical analysis (SMA, RSI, MACD, BBands, ADX)
   -> ML prediction (feature engineering -> model -> UP/DOWN/NEUTRAL)
@@ -142,13 +140,21 @@ Symbol selected -> DataFetcher (yfinance/Alpha Vantage) -> OHLCV DataFrame
 
 ```
 Every hour during market hours:
-  1. Fetch latest bars from Alpaca (1H interval)
+  0. Reconcile budget with the broker's actual position; force-close if the
+     stop-loss threshold is breached (software backstop)
+  1. Fetch daily bars from Alpaca for ML + hourly bars for intraday context
   2. Run ML prediction pipeline
   3. Claude reviews signal + market context + portfolio state
   4. Decision: EXECUTE / PASS / CLOSE
-  5. If EXECUTE: submit order via Alpaca, track fill
+  5. If EXECUTE: submit order (whole-share buys carry a broker-side OTO
+     stop-loss leg, GTC); poll the actual fill and account only what filled
   6. Discord notification + UI update (LEDs, matrix, console)
 ```
+
+Safety properties: paper trading by default; the kill switch waits for the
+in-flight cycle to finish before liquidating (so a pending AI decision can
+never re-open a just-closed position); budget accounting is derived from
+actual fills and re-anchored to the broker every cycle.
 
 ## Configuration
 
@@ -166,7 +172,7 @@ All defaults live in `config.py`. Key settings:
 | `AUTO_TRADER_CYCLE_MINUTES` | 60 | Evaluation frequency |
 | `AUTO_TRADER_MAX_POSITION_PCT` | 25% | Max single position size |
 | `AUTO_TRADER_STOP_LOSS_PCT` | 5% | Stop loss threshold |
-| `USE_ALPHA_VANTAGE` | True | Use Alpha Vantage vs yfinance |
+| `CLAUDE_MODEL` | claude-sonnet-5 | Model for sentiment + trade decisions |
 
 ## Adding a Trading Strategy
 
@@ -191,11 +197,13 @@ TA-Lib               # Technical indicators (requires C lib)
 ephem                # Astronomical calculations
 scikit-learn, joblib # ML models
 anthropic            # Claude API (sentiment + auto-trading)
-alpaca-trade-api     # Broker integration
+alpaca-py            # Broker + market data integration
 requests             # Discord webhooks
-pytz                 # Timezone handling
 python-dotenv        # Environment variable loading
 ```
+
+Exact pinned versions live in `requirements.txt`; dev tools (pytest) in
+`requirements-dev.txt`. Run the test suite with `python -m pytest`.
 
 ## Disclaimer
 
