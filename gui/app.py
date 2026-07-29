@@ -1732,12 +1732,14 @@ class App(ctk.CTk):
             dialog.destroy()
             self.auto_trader_tab.stop_trading(liquidate=True)
             self.recommendation_display.display_text("EMERGENCY STOP", color=COLOR_KILL_SWITCH)
-            self.log_message("KILL SWITCH: Trading stopped, positions liquidated.", tag="negative")
+            # Liquidation completes after the in-flight cycle ends; the
+            # 'stopped'/'liquidated' notifications report the actual outcome
+            self.log_message("KILL SWITCH: Stop & liquidate requested.", tag="negative")
 
         def stop_only():
             dialog.destroy()
             self.auto_trader_tab.stop_trading(liquidate=False)
-            self.log_message("KILL SWITCH: Trading stopped, positions kept.", tag="negative")
+            self.log_message("KILL SWITCH: Stop requested, positions kept.", tag="negative")
 
         ctk.CTkButton(btn_frame, text="Stop & Liquidate", command=stop_and_liquidate,
                       font=self.font_button, text_color="#FFFFFF",

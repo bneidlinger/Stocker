@@ -1,7 +1,9 @@
 # trading/auto_trader_config.py
 # Configuration dataclass for the auto-trading engine
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+from config import CLAUDE_MODEL
 
 
 @dataclass
@@ -14,4 +16,4 @@ class AutoTraderConfig:
     max_position_pct: float = 0.25        # Max 25% of budget per trade
     stop_loss_pct: float = 0.05           # 5% stop loss
     paper_trading: bool = True
-    claude_model: str = "claude-sonnet-4-20250514"
+    claude_model: str = CLAUDE_MODEL      # Single-sourced from config.py

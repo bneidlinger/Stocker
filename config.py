@@ -34,7 +34,7 @@ REC_ADX_THRESHOLD = 25
 
 # --- Claude Configuration (replaces OpenAI) ---
 CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-5"  # exact model id -- no date suffix
 SENTIMENT_ENABLED = True
 
 # --- Alpaca Configuration ---

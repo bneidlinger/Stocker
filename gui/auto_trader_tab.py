@@ -315,34 +315,39 @@ class AutoTraderTab:
         self.app.log_message(f"--- AUTO-TRADER STARTED: {symbol} | ${budget:.2f} | {direction} ---", tag="positive")
 
     def stop_trading(self, liquidate: bool = False):
-        """Stop the auto-trader."""
-        if self.auto_trader and self.auto_trader.is_running:
-            self.auto_trader.stop(liquidate=liquidate)
-
-        # Cancel countdown
+        """Request auto-trader stop. stop() returns immediately; the shutdown
+        worker joins the in-flight cycle first, THEN liquidates, and the final
+        UI state arrives via the 'stopped' notification in on_update."""
+        # Cancel countdown either way
         if self._countdown_job:
             try:
                 self.app.after_cancel(self._countdown_job)
             except Exception:
                 pass
             self._countdown_job = None
+        self.countdown_label.configure(text="Next: --:--")
 
-        # Update UI
+        if self.auto_trader and self.auto_trader.is_running:
+            self.auto_trader.stop(liquidate=liquidate)
+            self.start_button.configure(state="disabled")
+            self.stop_button.configure(state="disabled")
+            self.status_label.configure(text="STOPPING...", text_color=COLOR_FOREGROUND)
+            action = "Stop & liquidate" if liquidate else "Stop"
+            self.app.log_message(
+                f"--- AUTO-TRADER: {action} requested; waiting for current cycle to finish ---")
+        else:
+            # Not running: nothing to wait for, reset the UI directly
+            self._finalize_stopped_ui()
+
+    def _finalize_stopped_ui(self):
+        """Puts the tab (and the app's kill switch/LEDs) into the stopped state."""
         self.start_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
         self.status_label.configure(text="STOPPED", text_color=COLOR_NEGATIVE)
-        self.countdown_label.configure(text="Next: --:--")
-
-        # Disable kill switch
         if hasattr(self.app, 'kill_switch_button'):
             self.app.kill_switch_button.configure(state="disabled")
-
-        # Reset LEDs
         self.app.set_led_state("AUTO", "off")
         self.app.set_led_state("AI", "off")
-
-        action = "Stopped & liquidated" if liquidate else "Stopped"
-        self.app.log_message(f"--- AUTO-TRADER {action.upper()} ---", tag="negative")
 
     def on_update(self, data: Dict):
         """Handle update from background thread (runs on main thread via app.after)."""
@@ -417,9 +422,10 @@ class AutoTraderTab:
             self.app.after(3000, lambda: self.app.set_led_state("ERR", "off"))
 
         elif update_type == "stopped":
-            self.status_label.configure(text="STOPPED", text_color=COLOR_NEGATIVE)
-            self.app.set_led_state("AUTO", "off")
-            self.app.set_led_state("AI", "off")
+            self._finalize_stopped_ui()
+            liquidated = data.get("liquidated", False)
+            action = "STOPPED & LIQUIDATED" if liquidated else "STOPPED"
+            self.app.log_message(f"--- AUTO-TRADER {action} ---", tag="negative")
 
         elif update_type == "liquidated":
             self.app.log_message("Position liquidated by auto-trader.", tag="negative")

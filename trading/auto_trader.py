@@ -37,10 +37,17 @@ class AutoTrader:
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
 
-        # Budget tracking (soft limit -- not Alpaca-side)
+        # Budget tracking. budget_spent is defined as the cost basis of the
+        # bot's open position and is reconciled against the broker's actual
+        # position every cycle (see _reconcile_budget), so it self-heals any
+        # drift from partial fills, stop-leg executions, or manual trades.
         self.budget_total = config.budget
         self.budget_spent = 0.0
         self.budget_remaining = config.budget
+        self.realized_pnl = 0.0
+
+        # How long to poll an order for fills before cancelling (tests shrink this)
+        self.fill_timeout_s = 30
 
         # State
         self.cycle_count = 0
@@ -53,14 +60,19 @@ class AutoTrader:
         return self._running
 
     def get_state(self) -> Dict:
-        """Thread-safe snapshot of current state."""
-        with self._lock:
-            position = None
-            try:
-                position = self.broker.get_position(self.config.symbol)
-            except Exception:
-                pass
+        """Thread-safe snapshot of current state.
 
+        The broker call is a network request and deliberately happens OUTSIDE
+        the lock -- holding the lock across it would block the trading thread's
+        budget updates for the duration of an HTTP round trip.
+        """
+        position = None
+        try:
+            position = self.broker.get_position(self.config.symbol)
+        except Exception:
+            pass
+
+        with self._lock:
             return {
                 "running": self._running,
                 "symbol": self.config.symbol,
@@ -68,6 +80,7 @@ class AutoTrader:
                 "budget_total": self.budget_total,
                 "budget_spent": self.budget_spent,
                 "budget_remaining": self.budget_remaining,
+                "realized_pnl": self.realized_pnl,
                 "last_decision": self.last_decision,
                 "position": position,
                 "trade_count": len(self.trade_log),
@@ -115,13 +128,28 @@ class AutoTrader:
 
     def stop(self, liquidate: bool = False):
         """
-        Stop the auto-trading loop.
+        Signal the trading loop to stop. Returns immediately.
 
-        Args:
-            liquidate: If True, close all positions for the symbol.
+        Shutdown ordering matters: liquidation happens only AFTER the cycle
+        thread has ended -- an in-flight cycle (e.g. blocked on the Claude
+        call) could otherwise open a new position right after we closed it.
+        The join + liquidation run on a shutdown worker so the Tk thread never
+        blocks; the UI is finalized by the resulting 'stopped' notification.
         """
         self._stop_event.set()
         self._running = False
+        threading.Thread(target=self._shutdown_worker, args=(liquidate,),
+                         daemon=True).start()
+
+    def _shutdown_worker(self, liquidate: bool):
+        """Waits for the trading loop to end, then liquidates and notifies."""
+        cycle_thread = self._thread
+        if cycle_thread and cycle_thread.is_alive():
+            # Worst case for a cycle is one Claude call plus order fill polling
+            cycle_thread.join(timeout=120)
+            if cycle_thread.is_alive():
+                print("Warning: trading loop did not stop within 120s; proceeding "
+                      "(pre-submit stop-event guards prevent new orders).")
 
         positions_closed = []
         if liquidate:
@@ -132,10 +160,6 @@ class AutoTrader:
                     self._notify_ui({"type": "liquidated", "result": result})
             except Exception as e:
                 print(f"Error liquidating during stop: {e}")
-
-        # Wait for thread to finish
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=10)
 
         self._notify_ui({"type": "stopped", "liquidated": liquidate,
                          "positions_closed": positions_closed})
@@ -192,10 +216,34 @@ class AutoTrader:
         symbol = self.config.symbol
         self._notify_ui({"type": "cycle_start", "cycle": self.cycle_count + 1})
 
-        # 1. Fetch latest bars from Alpaca
+        # 0. Reconcile budget with broker truth, then enforce the software
+        #    stop-loss. This backstop covers fractional positions (no broker
+        #    stop leg possible), expired/cancelled stop legs, and positions
+        #    opened outside the bot.
+        position = self.broker.get_position(symbol)
+        self._reconcile_budget(position)
+        if position and position.get("unrealized_plpc", 0.0) <= -self.config.stop_loss_pct:
+            print(f"STOP-LOSS: {symbol} unrealized {position['unrealized_plpc']:.2%} "
+                  f"breaches -{self.config.stop_loss_pct:.2%}; closing position.")
+            trade_result = self._close_position(reason="STOP-LOSS")
+            self._notify_ui({
+                "type": "cycle_end", "cycle": self.cycle_count + 1,
+                "decision": "STOP-LOSS", "confidence": 1.0,
+                "reasoning": (f"Unrealized P/L {position['unrealized_plpc']:.2%} breached "
+                              f"the -{self.config.stop_loss_pct:.2%} stop-loss threshold."),
+                "ml_direction": "N/A", "ml_confidence": 0.0,
+                "trade_result": trade_result,
+                "budget_remaining": self.budget_remaining,
+                "position": self.broker.get_position(symbol),
+            })
+            return
+
+        # 1. Fetch bars. ML models are trained on DAILY data, so predictions
+        #    use daily bars (400 clears the 200-day feature warm-up); a small
+        #    hourly fetch supplies intraday context for the Claude prompt.
         try:
-            bars = self.broker.get_bars(symbol, timeframe="1Hour", limit=120)
-            if bars.empty:
+            bars_ml = self.broker.get_bars(symbol, timeframe="1Day", limit=400)
+            if bars_ml.empty:
                 self._notify_ui({"type": "cycle_end", "decision": "PASS",
                                  "reasoning": "No bar data available"})
                 return
@@ -204,17 +252,27 @@ class AutoTrader:
                              "message": f"Failed to fetch bars: {e}"})
             return
 
-        # 2. Run ML prediction
-        ml_result = self._get_ml_prediction(bars)
+        try:
+            bars_intraday = self.broker.get_bars(symbol, timeframe="1Hour", limit=24)
+            if bars_intraday.empty:
+                bars_intraday = bars_ml
+        except Exception:
+            bars_intraday = bars_ml
+
+        if self._stop_event.is_set():
+            return
+
+        # 2. Run ML prediction (daily bars)
+        ml_result = self._get_ml_prediction(bars_ml)
 
         # 3. Get latest quote
         try:
             quote = self.broker.get_latest_quote(symbol)
-            latest_price = quote.get("ask") or quote.get("bid") or float(bars['close'].iloc[-1])
+            latest_price = quote.get("ask") or quote.get("bid") or float(bars_intraday['close'].iloc[-1])
         except Exception:
-            latest_price = float(bars['close'].iloc[-1])
+            latest_price = float(bars_ml['close'].iloc[-1])
 
-        # 4. Get current position
+        # 4. Refresh position for the prompt context
         position = self.broker.get_position(symbol)
 
         # 5. Build context dicts
@@ -228,8 +286,8 @@ class AutoTrader:
 
         market_context = {
             "latest_price": latest_price,
-            "volume": int(bars['volume'].iloc[-1]) if 'volume' in bars.columns else 0,
-            "intraday_summary": self._summarize_bars(bars),
+            "volume": int(bars_intraday['volume'].iloc[-1]) if 'volume' in bars_intraday.columns else 0,
+            "intraday_summary": self._summarize_bars(bars_intraday),
         }
 
         portfolio_state = {
@@ -246,6 +304,8 @@ class AutoTrader:
         }
 
         # 6. Ask Claude for decision
+        if self._stop_event.is_set():
+            return
         self._notify_ui({"type": "ai_evaluating"})
         decision = self.claude.evaluate_trade_signal(
             symbol, signal, market_context, portfolio_state, risk_params,
@@ -254,6 +314,11 @@ class AutoTrader:
 
         with self._lock:
             self.last_decision = decision
+
+        # A stop may have been requested while the Claude call was in flight
+        # (this is the kill-switch race) -- never act on the decision then
+        if self._stop_event.is_set():
+            return
 
         # 7. Act on decision
         trade_result = None
@@ -334,7 +399,8 @@ class AutoTrader:
                 "hybrid_recommendation": "HOLD"}
 
     def _execute_trade(self, decision: Dict, latest_price: float) -> Optional[Dict]:
-        """Execute a trade based on AI decision."""
+        """Execute a trade based on AI decision. Budget updates use the actual
+        fill (filled_qty x filled_avg_price), never an assumed price."""
         action = decision.get("suggested_action", {})
         side = action.get("side", "buy")
 
@@ -362,6 +428,22 @@ class AutoTrader:
                 print("Insufficient budget for trade.")
                 return None
 
+        # Broker-side stop-loss: Alpaca rejects fractional qty on advanced
+        # order classes, so whole-share BUY entries get an OTO stop leg. The
+        # entry must be GTC -- a DAY entry's stop leg dies at the close.
+        # Fractional entries (and shorts) rely on the per-cycle software stop.
+        stop_loss_price = None
+        time_in_force = "day"
+        if side == "buy" and self.config.stop_loss_pct > 0 and int(qty) >= 1:
+            qty = float(int(qty))
+            stop_loss_price = latest_price * (1 - self.config.stop_loss_pct)
+            time_in_force = "gtc"
+
+        # Final guard: a stop may have been requested during the Claude call
+        if self._stop_event.is_set():
+            print("Stop requested; skipping order submission.")
+            return None
+
         try:
             order_type = action.get("order_type", "market")
             limit_price = action.get("limit_price")
@@ -371,37 +453,43 @@ class AutoTrader:
                 qty=round(qty, 4),
                 side=side,
                 order_type=order_type,
+                time_in_force=time_in_force,
                 limit_price=limit_price,
+                stop_loss_price=stop_loss_price,
             )
 
-            # Wait briefly for fill
-            filled_price = latest_price
-            for _ in range(5):
-                time.sleep(1)
-                order_status = self.broker.get_order(result["order_id"])
-                if order_status["status"] == "filled":
-                    filled_price = order_status.get("filled_avg_price", latest_price)
-                    break
+            # Wait for the actual fill; on timeout the order is cancelled and
+            # whatever partially filled is what gets accounted
+            fill = self._await_fill(result["order_id"])
+            filled_qty = fill.get("filled_qty") or 0.0
+            filled_price = fill.get("filled_avg_price") or 0.0
+            total_cost = filled_qty * filled_price
 
-            # Update budget
-            total_cost = qty * filled_price
-            if side == "buy":
-                with self._lock:
+            with self._lock:
+                if side == "buy":
                     self.budget_spent += total_cost
-                    self.budget_remaining = self.budget_total - self.budget_spent
+                else:
+                    self.budget_spent -= total_cost
+                self.budget_remaining = self.budget_total - self.budget_spent
 
             result["total_cost"] = total_cost
+            result["filled_qty"] = filled_qty
             result["filled_avg_price"] = filled_price
+            result["status"] = fill.get("status", result.get("status"))
+            result["stop_loss_price"] = stop_loss_price
 
-            # Log
+            if filled_qty == 0:
+                print("Order did not fill within the wait window; budget unchanged.")
+
             self.trade_log.append({
                 "timestamp": datetime.now().isoformat(),
                 "symbol": self.config.symbol,
                 "side": side,
-                "qty": qty,
+                "qty": filled_qty,
                 "price": filled_price,
                 "total_cost": total_cost,
                 "order_id": result["order_id"],
+                "stop_leg_ids": result.get("legs", []),
                 "decision": decision,
             })
 
@@ -417,29 +505,88 @@ class AutoTrader:
                     pass
             return None
 
-    def _close_position(self) -> Optional[Dict]:
-        """Close the current position."""
+    def _close_position(self, reason: str = "AI decision") -> Optional[Dict]:
+        """Close the current position, releasing its actual cost basis from
+        the budget and recording realized P/L."""
         try:
+            position_before = self.broker.get_position(self.config.symbol)
             result = self.broker.liquidate_position(self.config.symbol)
             if result:
-                # Reclaim budget from the sale
-                position = self.broker.get_position(self.config.symbol)
-                if position is None:
-                    # Position fully closed
-                    with self._lock:
-                        self.budget_spent = 0.0
-                        self.budget_remaining = self.budget_total
+                fill = self._await_fill(result["order_id"]) if result.get("order_id") else {}
+                filled_qty = abs(fill.get("filled_qty") or
+                                 (position_before["qty"] if position_before else 0.0))
+                filled_price = (fill.get("filled_avg_price") or
+                                (position_before["current_price"] if position_before else 0.0))
+                proceeds = filled_qty * filled_price
+                basis = (filled_qty * position_before["avg_entry_price"]
+                         if position_before else 0.0)
+
+                with self._lock:
+                    self.budget_spent = max(0.0, self.budget_spent - basis)
+                    self.budget_remaining = self.budget_total - self.budget_spent
+                    self.realized_pnl += proceeds - basis
 
                 self.trade_log.append({
                     "timestamp": datetime.now().isoformat(),
                     "symbol": self.config.symbol,
                     "side": "close",
+                    "qty": filled_qty,
+                    "price": filled_price,
+                    "reason": reason,
                     "order_id": result.get("order_id"),
                 })
             return result
         except Exception as e:
             print(f"Position close failed: {e}")
             return None
+
+    def _reconcile_budget(self, position: Optional[Dict]):
+        """Anchor deployed budget to the broker's actual position.
+
+        Deriving budget_spent from the broker each cycle self-heals every
+        drift source at once: assumed prices, partial fills, stop-leg
+        executions between cycles, manual intervention. Assumes the bot owns
+        this symbol's whole position (same assumption as the liquidation
+        paths).
+        """
+        basis = abs(position["qty"]) * position["avg_entry_price"] if position else 0.0
+        with self._lock:
+            self.budget_spent = basis
+            self.budget_remaining = self.budget_total - self.budget_spent
+
+    def _await_fill(self, order_id: str, timeout_s: Optional[int] = None) -> Dict:
+        """Polls an order until it reaches a terminal state or the timeout.
+
+        On timeout the order is cancelled, then fetched one final time -- the
+        cancel can race a fill, and the last fetch is the truth either way, so
+        budget updates always reflect what actually filled (possibly nothing,
+        possibly partially).
+        """
+        timeout_s = self.fill_timeout_s if timeout_s is None else timeout_s
+        terminal = ("filled", "canceled", "cancelled", "expired", "rejected")
+        deadline = time.time() + timeout_s
+        status: Dict = {}
+        while time.time() < deadline:
+            try:
+                status = self.broker.get_order(order_id)
+            except Exception as e:
+                print(f"Order status poll failed: {e}")
+                break
+            if status.get("status") in terminal:
+                return status
+            if self._stop_event.is_set():
+                break
+            time.sleep(min(1.0, max(0.05, timeout_s / 10)))
+
+        try:
+            self.broker.cancel_order(order_id)
+        except Exception as e:
+            print(f"Cancel after fill-timeout failed: {e}")
+        try:
+            status = self.broker.get_order(order_id)
+        except Exception as e:
+            print(f"Final order fetch failed: {e}")
+        return status
 
     def _calculate_position_size(self, price: float) -> float:
         """Calculate position size respecting budget and max position limits."""

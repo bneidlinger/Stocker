@@ -81,7 +81,7 @@ Respond with this exact JSON structure:
     "market_conditions_note": "brief market conditions observation"
 }}"""
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
+    def __init__(self, api_key: str, model: str = "claude-sonnet-5"):
         """
         Initialize the Claude AI client.
 
@@ -108,9 +108,12 @@ Respond with this exact JSON structure:
         )
 
         try:
+            # Current Claude models think adaptively by default, and max_tokens
+            # caps thinking + response together -- keep generous headroom so
+            # the JSON answer is never truncated mid-structure
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=4096,
+                max_tokens=8192,
                 system=self.SENTIMENT_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}]
             )
@@ -153,9 +156,11 @@ Respond with this exact JSON structure:
         )
 
         try:
+            # max_tokens covers adaptive thinking + the JSON decision; a tight
+            # cap here risks a truncated (unparseable) decision
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=2048,
+                max_tokens=8192,
                 system=system,
                 messages=[{"role": "user", "content": user_message}]
             )
