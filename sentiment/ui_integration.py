@@ -225,27 +225,28 @@ class SentimentModule:
         # Update UI to show analysis is running
         self.status_label.configure(text="Status: Running Analysis...", text_color=self.COLOR_FOREGROUND)
         self.sentiment_button.configure(state="disabled", text="Analysis in Progress...")
-        self.app.set_led_state("ML", "on", flicker=True)  # Use the ML LED for sentiment analysis
         self.app.log_message(f"\n--- Generating Market Sentiment Analysis for {symbol} ---")
         self.app.log_message(f"Prediction Horizon: {horizon_days} days")
-        self.app.update_idletasks()  # Update UI
 
-        try:
-            # Run the sentiment analysis
-            sentiment_data = self.analyzer.analyze_sentiment(
+        # Snapshot inputs on the main thread; the Claude API call (the slow,
+        # blocking part) runs on a worker via the app's background helper
+        price_data = self.app.current_data.copy()
+        analyzer = self.analyzer
+
+        def sentiment_worker():
+            return analyzer.analyze_sentiment(
                 symbol=symbol,
-                price_data=self.app.current_data,
+                price_data=price_data,
                 technical_data=technical_data,
                 ml_prediction=ml_prediction,
                 horizon_days=horizon_days
             )
 
-            # Log the sentiment result
+        def on_done(sentiment_data):
             sentiment = sentiment_data.get("sentiment", "ERROR")
             confidence = sentiment_data.get("confidence", "UNKNOWN")
             self.app.log_message(f"Sentiment Analysis Complete: {sentiment} ({confidence})")
 
-            # Log summary
             summary = sentiment_data.get("summary", "No summary available")
             self.app.log_message(f"Summary: {summary}")
 
@@ -261,16 +262,16 @@ class SentimentModule:
             # Display the HTML report
             self.analyzer.display_sentiment_report(sentiment_data)
 
-            # Update UI to show analysis is complete
             self.status_label.configure(text="Status: Analysis Complete", text_color=self.COLOR_ACCENT)
             self.sentiment_button.configure(state="normal", text="Generate Sentiment Analysis")
 
-        except Exception as e:
-            self.app.log_message(f"Error during sentiment analysis: {e}", tag="negative")
-            self.status_label.configure(text=f"Status: Error", text_color="#ff4d6d")
+        def on_error(exc):
+            self.app.log_message(f"Error during sentiment analysis: {exc}", tag="negative")
+            self.status_label.configure(text="Status: Error", text_color="#ff4d6d")
             self.sentiment_button.configure(state="normal", text="Generate Sentiment Analysis")
-        finally:
-            self.app.set_led_state("ML", "off")  # Turn off the LED
+
+        self.app.run_in_background(sentiment_worker, on_done=on_done, on_error=on_error,
+                                   led=("ML", True))
 
     def _prepare_technical_data(self) -> Dict:
         """

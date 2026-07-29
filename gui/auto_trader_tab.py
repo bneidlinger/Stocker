@@ -73,10 +73,12 @@ class AutoTraderTab:
                         fg_color=COLOR_BUTTON, hover_color=COLOR_BUTTON_HOVER
                         ).pack(side="left", padx=(5, 5))
 
-        ctk.CTkButton(conn_frame, text="Connect", command=self.connect_broker,
-                      font=self.font_button, text_color=COLOR_BACKGROUND,
-                      fg_color=COLOR_SECONDARY_BUTTON, hover_color=COLOR_SECONDARY_BUTTON_HOVER,
-                      width=80).pack(side="left", padx=(5, 5))
+        self.connect_button = ctk.CTkButton(
+            conn_frame, text="Connect", command=self.connect_broker,
+            font=self.font_button, text_color=COLOR_BACKGROUND,
+            fg_color=COLOR_SECONDARY_BUTTON, hover_color=COLOR_SECONDARY_BUTTON_HOVER,
+            width=80)
+        self.connect_button.pack(side="left", padx=(5, 5))
 
         self.broker_status_label = ctk.CTkLabel(conn_frame, text="Disconnected",
                                                  font=self.font_normal, text_color=COLOR_NEGATIVE)
@@ -186,7 +188,7 @@ class AutoTraderTab:
     # --- Actions ---
 
     def connect_broker(self):
-        """Connect to Alpaca."""
+        """Connect to Alpaca (network calls run on a background worker)."""
         key = self.alpaca_key_var.get().strip()
         secret = self.alpaca_secret_var.get().strip()
         if not key or not secret:
@@ -195,22 +197,28 @@ class AutoTraderTab:
 
         paper = self.paper_var.get()
         base_url = ALPACA_BASE_URL_PAPER if paper else ALPACA_BASE_URL_LIVE
+        self.broker_status_label.configure(text="Connecting...", text_color=COLOR_FOREGROUND)
 
-        try:
-            self.broker_status_label.configure(text="Connecting...", text_color=COLOR_FOREGROUND)
-            self.app.update_idletasks()
+        def connect_worker():
+            broker = AlpacaBrokerClient(key, secret, base_url, paper=paper)
+            return broker, broker.get_account()
 
-            self.broker = AlpacaBrokerClient(key, secret, base_url, paper=paper)
-            account = self.broker.get_account()
+        def on_done(result):
+            broker, account = result
+            self.broker = broker
             mode = "Paper" if paper else "LIVE"
             self.broker_status_label.configure(
                 text=f"{mode} | ${account['equity']:,.2f}",
                 text_color=COLOR_POSITIVE
             )
             self.app.log_message(f"Alpaca connected ({mode}). Equity: ${account['equity']:,.2f}", tag="positive")
-        except Exception as e:
+
+        def on_error(exc):
             self.broker_status_label.configure(text="Connection Failed", text_color=COLOR_NEGATIVE)
-            self.app.log_message(f"Alpaca connection failed: {e}", tag="negative")
+            self.app.log_message(f"Alpaca connection failed: {exc}", tag="negative")
+
+        self.app.run_in_background(connect_worker, on_done=on_done, on_error=on_error,
+                                   busy_widgets=(self.connect_button,))
 
     def test_discord(self):
         """Send a test Discord webhook."""

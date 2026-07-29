@@ -4,6 +4,7 @@
 import os
 import json
 import re
+import html
 import pandas as pd
 from typing import Dict, Optional, Any
 import webbrowser
@@ -33,7 +34,26 @@ class MarketSentimentAnalyzer:
                 raise ValueError("Claude API key not provided and not found in environment variables.")
 
         self.claude = ClaudeAIClient(api_key=api_key)
+        self.report_dir = os.path.join(tempfile.gettempdir(), "stocker_reports")
+        self._sweep_old_reports()
         print("Market Sentiment Analyzer initialized (Claude API).")
+
+    def _sweep_old_reports(self):
+        """Deletes HTML reports left over from previous sessions.
+
+        Reports must outlive their write (the browser opens them from disk), so
+        they cannot be deleted at creation time -- clean up on next init instead.
+        """
+        try:
+            os.makedirs(self.report_dir, exist_ok=True)
+            for name in os.listdir(self.report_dir):
+                if name.endswith(".html"):
+                    try:
+                        os.remove(os.path.join(self.report_dir, name))
+                    except OSError:
+                        pass
+        except OSError as e:
+            print(f"Could not sweep old sentiment reports: {e}")
 
     def analyze_sentiment(self,
                           symbol: str,
@@ -64,14 +84,22 @@ class MarketSentimentAnalyzer:
         """
         html_content = self._generate_html_report(sentiment_data)
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as f:
+        os.makedirs(self.report_dir, exist_ok=True)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.html',
+                                         dir=self.report_dir) as f:
             f.write(html_content.encode('utf-8'))
             temp_path = f.name
 
         webbrowser.open('file://' + temp_path)
 
     def _generate_html_report(self, sentiment_data: Dict) -> str:
-        """Generates an HTML report for the sentiment analysis results."""
+        """Generates an HTML report for the sentiment analysis results.
+
+        Every model-derived string is escaped before interpolation -- the
+        report is rendered in a real browser, so raw LLM output must never
+        reach the HTML unescaped.
+        """
+        esc = html.escape
         sentiment_colors = {
             "POSITIVE": "#39ff14",
             "NEUTRAL": "#e0fbfc",
@@ -79,26 +107,50 @@ class MarketSentimentAnalyzer:
             "ERROR": "#ff69b4"
         }
 
-        sentiment = sentiment_data.get("sentiment", "ERROR")
-        color = sentiment_colors.get(sentiment, sentiment_colors["ERROR"])
+        sentiment_raw = str(sentiment_data.get("sentiment", "ERROR"))
+        color = sentiment_colors.get(sentiment_raw, sentiment_colors["ERROR"])
+        sentiment = esc(sentiment_raw)
+
+        symbol = esc(str(sentiment_data.get('symbol', 'Unknown')))
+        analysis_date = esc(str(sentiment_data.get('analysis_date', 'Unknown')))
+        horizon_days = esc(str(sentiment_data.get('horizon_days', 'Unknown')))
+        confidence = esc(str(sentiment_data.get('confidence', 'Unknown')))
+        summary = esc(str(sentiment_data.get('summary', 'No summary available')))
+        trade_considerations = esc(str(sentiment_data.get('trade_considerations',
+                                                          'No trade considerations provided')))
+
+        price_action = sentiment_data.get('price_action', {}) or {}
+        trend = esc(str(price_action.get('trend', 'Unknown')))
+        pattern = esc(str(price_action.get('pattern', 'No pattern detected')))
+        key_levels = price_action.get('key_levels', {}) or {}
+        support = esc(', '.join(str(x) for x in (key_levels.get('support', []) or [])))
+        resistance = esc(', '.join(str(x) for x in (key_levels.get('resistance', []) or [])))
+
+        ml_pred = sentiment_data.get('ml_prediction', {}) or {}
+        ml_direction = esc(str(ml_pred.get('direction', 'Unknown')))
+        ml_interpretation = esc(str(ml_pred.get('interpretation', 'No interpretation available')))
+        try:
+            ml_probability = float(ml_pred.get('probability') or 0.0)
+        except (TypeError, ValueError):
+            ml_probability = 0.0
 
         indicators_html = ""
-        for indicator in sentiment_data.get("key_indicators", []):
+        for indicator in sentiment_data.get("key_indicators", []) or []:
             indicators_html += f"""
             <tr>
-                <td>{indicator.get('indicator', 'Unknown')}</td>
-                <td>{indicator.get('value', 'N/A')}</td>
-                <td>{indicator.get('interpretation', 'No interpretation available')}</td>
+                <td>{esc(str(indicator.get('indicator', 'Unknown')))}</td>
+                <td>{esc(str(indicator.get('value', 'N/A')))}</td>
+                <td>{esc(str(indicator.get('interpretation', 'No interpretation available')))}</td>
             </tr>
             """
 
         factors_html = ""
-        for factor in sentiment_data.get("key_factors", []):
-            factors_html += f"<li>{factor}</li>"
+        for factor in sentiment_data.get("key_factors", []) or []:
+            factors_html += f"<li>{esc(str(factor))}</li>"
 
         risks_html = ""
-        for risk in sentiment_data.get("risks", []):
-            risks_html += f"<li>{risk}</li>"
+        for risk in sentiment_data.get("risks", []) or []:
+            risks_html += f"<li>{esc(str(risk))}</li>"
 
         html = f"""
         <!DOCTYPE html>
@@ -106,7 +158,7 @@ class MarketSentimentAnalyzer:
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Market Sentiment Report: {sentiment_data.get('symbol', 'Unknown')}</title>
+            <title>Market Sentiment Report: {symbol}</title>
             <style>
                 body {{
                     font-family: 'Courier New', monospace;
@@ -256,7 +308,7 @@ class MarketSentimentAnalyzer:
                 .ml-probability-fill {{
                     height: 100%;
                     background-color: {color};
-                    width: {sentiment_data.get('ml_prediction', {{}}).get('probability', 0) * 100}%;
+                    width: {ml_probability * 100}%;
                     border-radius: 10px;
                     box-shadow: 0 0 10px {color};
                 }}
@@ -276,33 +328,33 @@ class MarketSentimentAnalyzer:
                 <header>
                     <div style="display: flex; align-items: center; justify-content: center;">
                         <span class="led"></span>
-                        <h1>{sentiment_data.get('symbol', 'Unknown')} Sentiment Analysis</h1>
+                        <h1>{symbol} Sentiment Analysis</h1>
                         <span class="led"></span>
                     </div>
                     <div class="sentiment-badge">{sentiment} SENTIMENT</div>
-                    <p>Analysis Date: {sentiment_data.get('analysis_date', 'Unknown')} | Prediction Horizon: {sentiment_data.get('horizon_days', 'Unknown')} days</p>
-                    <p>Confidence Level: {sentiment_data.get('confidence', 'Unknown')}</p>
+                    <p>Analysis Date: {analysis_date} | Prediction Horizon: {horizon_days} days</p>
+                    <p>Confidence Level: {confidence}</p>
                 </header>
 
                 <div class="section">
                     <h2>Summary</h2>
-                    <div class="summary">{sentiment_data.get('summary', 'No summary available')}</div>
+                    <div class="summary">{summary}</div>
                 </div>
 
                 <div class="grid-container">
                     <div class="grid-item">
                         <h3>Price Action</h3>
-                        <p><strong>Trend:</strong> {sentiment_data.get('price_action', {{}}).get('trend', 'Unknown')}</p>
-                        <p><strong>Pattern:</strong> {sentiment_data.get('price_action', {{}}).get('pattern', 'No pattern detected')}</p>
+                        <p><strong>Trend:</strong> {trend}</p>
+                        <p><strong>Pattern:</strong> {pattern}</p>
                         <h4>Key Levels</h4>
                         <div class="price-box">
                             <div class="price-item">
                                 <div class="price-label">Support</div>
-                                <div class="price-value">{', '.join(str(x) for x in sentiment_data.get('price_action', {{}}).get('key_levels', {{}}).get('support', []))}</div>
+                                <div class="price-value">{support}</div>
                             </div>
                             <div class="price-item">
                                 <div class="price-label">Resistance</div>
-                                <div class="price-value">{', '.join(str(x) for x in sentiment_data.get('price_action', {{}}).get('key_levels', {{}}).get('resistance', []))}</div>
+                                <div class="price-value">{resistance}</div>
                             </div>
                         </div>
                     </div>
@@ -310,13 +362,13 @@ class MarketSentimentAnalyzer:
                     <div class="grid-item">
                         <h3>ML Prediction</h3>
                         <div class="ml-direction">
-                            Direction: {sentiment_data.get('ml_prediction', {{}}).get('direction', 'Unknown')}
+                            Direction: {ml_direction}
                         </div>
-                        <p>{sentiment_data.get('ml_prediction', {{}}).get('interpretation', 'No interpretation available')}</p>
+                        <p>{ml_interpretation}</p>
                         <div class="ml-probability">
                             <div class="ml-probability-fill"></div>
                         </div>
-                        <p>Probability: {sentiment_data.get('ml_prediction', {{}}).get('probability', 0):.2f}</p>
+                        <p>Probability: {ml_probability:.2f}</p>
                     </div>
                 </div>
 
@@ -349,7 +401,7 @@ class MarketSentimentAnalyzer:
 
                 <div class="section">
                     <h3>Trade Considerations</h3>
-                    <p>{sentiment_data.get('trade_considerations', 'No trade considerations provided')}</p>
+                    <p>{trade_considerations}</p>
                 </div>
 
                 <div class="footer">

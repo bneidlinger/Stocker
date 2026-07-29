@@ -4,6 +4,7 @@
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
+import threading
 import time
 import random
 import os
@@ -26,6 +27,20 @@ class DataFetcher:
         os.makedirs(self.cache_dir, exist_ok=True)
         self.max_retries = 3
         self.retry_delay = 5  # seconds
+        # Optional shutdown signal (set by the app on close) so retry/backoff
+        # sleeps on worker threads end promptly instead of holding the process
+        self.stop_event: threading.Event | None = None
+
+    def _sleep(self, seconds: float):
+        """Sleeps in small chunks, returning early if stop_event is set."""
+        end = time.time() + seconds
+        while True:
+            remaining = end - time.time()
+            if remaining <= 0:
+                return
+            if self.stop_event is not None and self.stop_event.is_set():
+                return
+            time.sleep(min(0.5, remaining))
 
     def get_historical_data(self, symbol: str, period: str = "5y", interval: str = "1d") -> pd.DataFrame | None:
         """
@@ -63,7 +78,7 @@ class DataFetcher:
         
         # Add jitter to prevent synchronized API requests
         jitter = random.uniform(0.5, 2.0)
-        time.sleep(jitter)
+        self._sleep(jitter)
         
         # Implement retry logic
         for attempt in range(self.max_retries):
@@ -109,7 +124,7 @@ class DataFetcher:
                 if "Too Many Requests" in str(e) or "Rate limit" in str(e):
                     wait_time = self.retry_delay * (2 ** attempt)  # Exponential backoff
                     print(f"Rate limit hit for {symbol}. Retrying in {wait_time} seconds... (Attempt {attempt+1}/{self.max_retries})")
-                    time.sleep(wait_time)
+                    self._sleep(wait_time)
                 else:
                     print(f"Error fetching data for {symbol}: {e}")
                     return None
@@ -141,7 +156,7 @@ class DataFetcher:
         
         # Add jitter to prevent synchronized API requests
         jitter = random.uniform(0.1, 0.5)
-        time.sleep(jitter)
+        self._sleep(jitter)
         
         # Implement retry logic
         for attempt in range(self.max_retries):
@@ -180,21 +195,21 @@ class DataFetcher:
                             if attempt < self.max_retries - 1:
                                 wait_time = self.retry_delay * (2 ** attempt)
                                 print(f"Retrying in {wait_time} seconds... (Attempt {attempt+1}/{self.max_retries})")
-                                time.sleep(wait_time)
+                                self._sleep(wait_time)
                             continue
                     else:
                         print(f"Fallback failed: Could not retrieve history for {symbol}.")
                         if attempt < self.max_retries - 1:
                             wait_time = self.retry_delay * (2 ** attempt)
                             print(f"Retrying in {wait_time} seconds... (Attempt {attempt+1}/{self.max_retries})")
-                            time.sleep(wait_time)
+                            self._sleep(wait_time)
                         continue
                         
             except Exception as e:
                 if "Too Many Requests" in str(e) or "Rate limit" in str(e):
                     wait_time = self.retry_delay * (2 ** attempt)  # Exponential backoff
                     print(f"Rate limit hit for {symbol}. Retrying in {wait_time} seconds... (Attempt {attempt+1}/{self.max_retries})")
-                    time.sleep(wait_time)
+                    self._sleep(wait_time)
                 else:
                     print(f"Error fetching current price for {symbol}: {e}")
                     return None

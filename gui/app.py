@@ -20,6 +20,7 @@ import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 import matplotlib.dates as mdates
 
 # Configuration Imports
@@ -164,7 +165,7 @@ class App(ctk.CTk):
         self.plotted_data = None # Reference to data currently shown on chart
         self.latest_price = None
         self._loading_data = False # Flag used by clear_display
-        self._predicting_ml = False # Flag used by generate_ml_prediction
+        self._shutdown_event = threading.Event() # Interrupts fetcher retry sleeps on close
 
         # --- TA State ---
         self.talib_module = None # Loaded TA-Lib module
@@ -208,6 +209,7 @@ class App(ctk.CTk):
 
         # --- Initialize Core Components ---
         self.data_fetcher = DataSourceFactory.get_data_fetcher()
+        self.data_fetcher.stop_event = self._shutdown_event
         self._load_optional_modules() # Load TA-Lib, Ephem
         self._configure_window()
         self._configure_fonts()
@@ -621,12 +623,12 @@ class App(ctk.CTk):
              return
 
         # --- Train Button ---
-        train_btn = ctk.CTkButton(
+        self.train_ml_button = ctk.CTkButton(
             self.ml_controls_frame, text="Train ML Model", command=self.train_ml_model,
             font=self.font_button, text_color=COLOR_BACKGROUND, width=130,
             fg_color=COLOR_LED_ML_ON, hover_color=COLOR_SECONDARY_BUTTON_HOVER
         )
-        train_btn.grid(row=0, column=0, padx=(0, 10), pady=2)
+        self.train_ml_button.grid(row=0, column=0, padx=(0, 10), pady=2)
 
         # --- Show Features Button ---
         self.show_features_button = ctk.CTkButton(
@@ -716,17 +718,59 @@ class App(ctk.CTk):
     # Core Application Logic Methods
     # --------------------------------------------------------------------------
 
+    def run_in_background(self, fn, on_done=None, on_error=None, busy_widgets=(), led=None):
+        """Runs fn() on a daemon thread, marshaling completion back to the Tk thread.
+
+        busy_widgets are disabled for the duration; led is a (name, flicker)
+        tuple lit while the work runs. fn must not touch Tk objects -- snapshot
+        its inputs on the main thread and do all UI work in on_done/on_error.
+        """
+        for widget in busy_widgets:
+            try:
+                widget.configure(state="disabled")
+            except tk.TclError:
+                pass
+        if led:
+            self.set_led_state(led[0], "on", flicker=led[1])
+
+        def finish(result, exc):
+            if not self.winfo_exists():
+                return
+            for widget in busy_widgets:
+                try:
+                    if widget.winfo_exists():
+                        widget.configure(state="normal")
+                except tk.TclError:
+                    pass
+            if led:
+                self.set_led_state(led[0], "off")
+            if exc is not None:
+                if on_error is not None:
+                    on_error(exc)
+                else:
+                    self.log_message(f"Background task failed: {exc}", tag="negative")
+                    traceback.print_exception(exc)
+            elif on_done is not None:
+                on_done(result)
+
+        def worker():
+            result, error = None, None
+            try:
+                result = fn()
+            except Exception as exc:
+                error = exc
+            try:
+                self.after(0, lambda: finish(result, error))
+            except RuntimeError:
+                pass  # window destroyed while the worker was running
+
+        threading.Thread(target=worker, daemon=True).start()
+
+
     def fetch_and_display_data(self):
-        """Fetches data, handles timezone, plots, calculates TA, and triggers prediction."""
+        """Kicks off a background fetch + TA + ML pipeline for the selected symbol."""
         custom_symbol = self.custom_symbol_entry.get().strip().upper()
         selected_symbol = custom_symbol if custom_symbol else self.symbol_var.get()
-
-        # --- REMOVED CHECK: Allow reloading the same symbol ---
-        # if selected_symbol == self.current_symbol and self.current_data is not None:
-        #      print(f"Data for {self.current_symbol} already loaded.")
-        #      return # Avoid redundant processing
-        # --- END REMOVED CHECK ---
-
         self.current_symbol = selected_symbol
 
         if not self.current_symbol:
@@ -736,8 +780,6 @@ class App(ctk.CTk):
         self._loading_data = True # Flag for placeholder text
         self.clear_display() # Show "Loading data...", clears matrix, restarts loop
         self.log_message(f"--- Loading data for {self.current_symbol} ---", clear_first=True)
-        self.set_led_state("CPU", "on", flicker=False) # Solid CPU light during load
-        self.update_idletasks() # Ensure "Loading..." text appears
 
         # Reset states for new load
         self.current_data = None
@@ -751,77 +793,161 @@ class App(ctk.CTk):
         self._update_feature_importance_button_state() # Disable feature button
         self.ml_prediction = None
         self.ml_model_loaded = False
-
         self._update_matrix_display(force_update=True) # Show "LOADING..."
-        # No need to restart loop here, clear_display already did
 
+        # Snapshot worker inputs on the main thread (Tk vars must not be read
+        # from the worker)
+        symbol = self.current_symbol
         try:
-            # --- Fetch Data ---
-            self.current_data = self.data_fetcher.get_historical_data(
-                self.current_symbol,
-                period=DEFAULT_DATA_PERIOD,
-                interval=DEFAULT_DATA_INTERVAL,
-            )
+            horizon = int(self.ml_horizon_var.get())
+        except (ValueError, TypeError, AttributeError):
+            horizon = self.ml_default_horizon
+        try:
+            threshold = float(self.ml_threshold_var.get()) / 100.0
+        except (ValueError, TypeError, AttributeError):
+            threshold = 0.01
 
-            if self.current_data is not None and not self.current_data.empty:
-                # --- Process Data ---
-                if isinstance(self.current_data.index, pd.DatetimeIndex) and self.current_data.index.tz is not None:
-                    self.current_data.index = self.current_data.index.tz_localize(None)
-                self.log_message(f"Successfully loaded {len(self.current_data)} data points.")
-                self.log_message(f"Data range: {self.current_data.index.min().strftime('%Y-%m-%d')} to {self.current_data.index.max().strftime('%Y-%m-%d')}")
-
-                # --- Plot Data ---
-                self.plot_data(self.current_data, title_suffix=f" ({DEFAULT_DATA_PERIOD})")
-                self.log_message("Chart updated.")
-                self.update_idletasks() # Force UI update after plot
-
-                # --- Calculate and Log TA Indicators ---
-                self.latest_ta_results = self._calculate_ta_indicators()
-                if self.latest_ta_results:
-                    self.latest_recommendation = self.latest_ta_results['recommendation'] # Update main rec variable
-                    self.latest_technical_score = self.latest_ta_results['score']
-                    self.latest_adx = self.latest_ta_results['adx']
-                    self.log_message(f"\n--- Technical Analysis ---")
-                    self.log_message(f"TA Recommendation: {self.latest_recommendation} (Score: {self.latest_technical_score:.1f}, ADX: {self.latest_adx:.1f})")
-                else:
-                    self.log_message("Could not calculate TA indicators.", tag="negative")
-                    self.latest_recommendation = "N/A" # Set state if TA fails
-                self._update_matrix_display(force_update=True) # Update matrix with TA result
-                # --- Restart matrix loop after forced update ---
-                self._start_matrix_loop_if_needed()
+        self.run_in_background(
+            lambda: self._fetch_worker(symbol, horizon, threshold),
+            on_done=lambda payload: self._on_fetch_done(symbol, payload),
+            on_error=lambda exc: self._on_fetch_error(symbol, exc),
+            busy_widgets=(self.fetch_button,),
+            led=("CPU", False),
+        )
 
 
-                # --- Get Current Price ---
-                current_price = self.data_fetcher.get_current_price(self.current_symbol)
-                self.latest_price = current_price
-                if current_price: self.log_message(f"Approx. Current Price: {current_price:.2f}")
+    def _fetch_worker(self, symbol: str, horizon: int, threshold: float) -> Dict:
+        """Background part of Load Data: fetch, TA, price, ML. No Tk access --
+        UI-bound messages are returned as (text, tag) pairs in 'logs'."""
+        logs = []
+        data = self.data_fetcher.get_historical_data(
+            symbol, period=DEFAULT_DATA_PERIOD, interval=DEFAULT_DATA_INTERVAL)
+        if data is None or data.empty:
+            return {"data": None, "logs": logs}
 
-                # --- Trigger ML Prediction/Load AFTER TA ---
-                self.generate_ml_prediction() # This might call hybrid, which forces matrix update again
+        if isinstance(data.index, pd.DatetimeIndex) and data.index.tz is not None:
+            data.index = data.index.tz_localize(None)
+        logs.append((f"Successfully loaded {len(data)} data points.", None))
+        logs.append((f"Data range: {data.index.min().strftime('%Y-%m-%d')} to "
+                     f"{data.index.max().strftime('%Y-%m-%d')}", None))
 
-            else:
-                # Handle no data case
-                self.log_message(f"Failed to load data or no data available for {self.current_symbol}.", tag="negative")
-                self.plot_data(None)
-                self.latest_recommendation = "NO DATA" # Update main rec variable
-                self._update_matrix_display(force_update=True)
-                self._start_matrix_loop_if_needed() # Ensure loop restarts even on failure
+        ta_results, ta_error = self._calculate_ta_indicators(data)
+        if ta_results:
+            logs.append(("\n--- Technical Analysis ---", None))
+            logs.append((f"TA Recommendation: {ta_results['recommendation']} "
+                         f"(Score: {ta_results['score']:.1f}, ADX: {ta_results['adx']:.1f})", None))
+        else:
+            detail = f" ({ta_error})" if ta_error else ""
+            logs.append((f"Could not calculate TA indicators{detail}.", "negative"))
+
+        price = self.data_fetcher.get_current_price(symbol)
+        if price:
+            logs.append((f"Approx. Current Price: {price:.2f}", None))
+
+        ml = self._ml_worker(symbol, data, ta_results, horizon, threshold, logs)
+
+        return {"data": data, "ta": ta_results, "price": price, "ml": ml, "logs": logs}
 
 
+    def _ml_worker(self, symbol: str, data: pd.DataFrame, ta_results: Optional[Dict],
+                   horizon: int, threshold: float, logs: list) -> Dict:
+        """ML part of the fetch pipeline (worker thread; no Tk access)."""
+        result = {"model_loaded": False, "prediction": None, "importances": None,
+                  "hybrid": None, "recommendation": None}
+        logs.append(("\n--- Machine Learning ---", None))
+        logs.append((f"Attempting to load model for {symbol} (Horizon: {horizon}d)...", None))
+        try:
+            if not self.ml_service.load_model_for_symbol(symbol, prediction_horizon=horizon):
+                logs.append(("No pre-trained model found. Proceeding with TA only.", None))
+                return result
+            result["model_loaded"] = True
+            meta = self.ml_service.get_loaded_model_metadata() or {}
+            logs.append((f"Successfully loaded model: {meta.get('model_class_name', 'Unknown')}", None))
+            result["importances"] = self.ml_service.get_loaded_feature_importances()
+
+            prediction = self.ml_service.predict(data.copy(), target_threshold=threshold)
+            if 'error' in prediction:
+                logs.append((f"ML Prediction Error: {prediction['error']}", "negative"))
+                return result
+            result["prediction"] = prediction
+            confidence = prediction.get('confidence')
+            confidence_str = f"{confidence:.3f}" if confidence is not None else "N/A"
+            logs.append((f"ML Direction: {prediction.get('direction')}", None))
+            logs.append((f"ML Confidence: {confidence_str}", None))
+            logs.append((f"ML Confidence Level: {prediction.get('confidence_level', 'UNKNOWN')}", None))
+
+            if self.ml_enable_hybrid and ta_results:
+                hybrid = self.ml_service.get_hybrid_recommendation(
+                    df=data.copy(), technical_score=ta_results['score'],
+                    adx_value=ta_results['adx'], target_threshold=threshold)
+                result["hybrid"] = hybrid
+                result["recommendation"] = str(hybrid.get('recommendation', 'ERROR')).upper()
+                logs.append(("\n--- Hybrid Recommendation ---", None))
+                logs.append((f"Hybrid Recommendation: {hybrid.get('recommendation')}", None))
+                logs.append((f"Hybrid Score: {hybrid.get('hybrid_score', 0.0):.2f}", None))
         except Exception as e:
-            self.log_message(f"An error occurred during data fetch/display: {e}", tag="negative")
-            print(f"Error during data fetch/display: {e}")
+            logs.append((f"ML step failed: {e}", "negative"))
+            print(f"Error during ML step: {e}")
             traceback.print_exc()
+        return result
+
+
+    def _on_fetch_done(self, symbol: str, payload: Dict):
+        """Main-thread part of Load Data: state assignment, plotting, logging."""
+        self._loading_data = False
+        if symbol != self.current_symbol:
+            print(f"Discarding stale fetch result for {symbol} (now on {self.current_symbol}).")
+            return
+
+        for message, tag in payload.get("logs", []):
+            self.log_message(message, tag=tag)
+
+        data = payload.get("data")
+        if data is None or data.empty:
+            self.log_message(f"Failed to load data or no data available for {symbol}.", tag="negative")
             self.plot_data(None)
-            self.current_data = None
-            self.latest_recommendation = "ERROR" # Update main rec variable
+            self.latest_recommendation = "NO DATA"
             self._update_matrix_display(force_update=True)
-            self._start_matrix_loop_if_needed() # Ensure loop restarts even on error
+            self._start_matrix_loop_if_needed()
+            return
+
+        self.current_data = data
+        ta = payload.get("ta")
+        self.latest_ta_results = ta
+        if ta:
+            self.latest_recommendation = ta['recommendation']
+            self.latest_technical_score = ta['score']
+            self.latest_adx = ta['adx']
+        else:
+            self.latest_recommendation = "N/A"
+        self.latest_price = payload.get("price")
+
+        ml = payload.get("ml") or {}
+        self.ml_model_loaded = ml.get("model_loaded", False)
+        self.ml_prediction = ml.get("prediction")
+        self.latest_feature_importances = ml.get("importances")
+        if ml.get("recommendation"):
+            self.latest_recommendation = ml["recommendation"]
+        self._update_feature_importance_button_state()
+
+        self.plot_data(self.current_data, title_suffix=f" ({DEFAULT_DATA_PERIOD})")
+        self.log_message("Chart updated.")
+        self._update_matrix_display(force_update=True)
+        self._start_matrix_loop_if_needed()
 
 
-        finally:
-            self._loading_data = False
-            self.set_led_state("CPU", "off")
+    def _on_fetch_error(self, symbol: str, exc: Exception):
+        """Main-thread error handler for the fetch pipeline."""
+        self._loading_data = False
+        if symbol != self.current_symbol:
+            return
+        self.log_message(f"An error occurred during data fetch/display: {exc}", tag="negative")
+        traceback.print_exception(exc)
+        self.plot_data(None)
+        self.current_data = None
+        self.latest_recommendation = "ERROR"
+        self._update_matrix_display(force_update=True)
+        self._start_matrix_loop_if_needed()
 
 
     def plot_data(self, data_to_plot: pd.DataFrame | None, title_suffix: str = ""):
@@ -932,41 +1058,38 @@ class App(ctk.CTk):
     # Technical Analysis Logic
     # --------------------------------------------------------------------------
 
-    def _calculate_ta_indicators(self) -> Optional[Dict]:
+    def _calculate_ta_indicators(self, data: pd.DataFrame) -> Tuple[Optional[Dict], Optional[str]]:
         """
         Calculates standard TA indicators and generates a recommendation score.
-        Uses self.current_data.
+        Pure computation -- safe to call from a worker thread (no Tk access).
 
         Returns:
-            A dictionary containing 'recommendation', 'score', 'adx',
-            and potentially other calculated indicators, or None if calculation fails.
+            (results, error) -- results is a dict with 'recommendation', 'score',
+            'adx' etc. or None; error is a short reason string when results is None.
         """
-        # --- (Full implementation from previous fix - app_py_ta_log_fix) ---
-        if self.current_data is None or self.current_data.empty: return None
+        if data is None or data.empty:
+            return None, "no data"
         if self.talib_module is None:
             # Attempt import if needed
             try:
                 import talib
                 self.talib_module = talib
             except ImportError:
-                self.log_message("TA-Lib not loaded. Cannot calculate TA.", tag="negative")
-                return None
+                return None, "TA-Lib not installed"
 
         required_length = max(REC_SMA_LONG, REC_ADX_PERIOD, REC_RSI_PERIOD)
-        if len(self.current_data) < required_length:
-            self.log_message(f"Insufficient data ({len(self.current_data)}) for TA (need {required_length}).", tag="negative")
-            return None
+        if len(data) < required_length:
+            return None, f"insufficient data ({len(data)} rows, need {required_length})"
 
         try:
             required_cols = ['close', 'high', 'low']
-            if not all(col in self.current_data.columns for col in required_cols):
-                 missing_cols_str = ", ".join([c for c in required_cols if c not in self.current_data.columns])
-                 self.log_message(f"TA Calc Error: Missing required columns: {missing_cols_str}", tag="negative")
-                 return None
+            if not all(col in data.columns for col in required_cols):
+                 missing_cols_str = ", ".join([c for c in required_cols if c not in data.columns])
+                 return None, f"missing columns: {missing_cols_str}"
 
-            close_prices = self.current_data['close']
-            high_prices = self.current_data['high']
-            low_prices = self.current_data['low']
+            close_prices = data['close']
+            high_prices = data['high']
+            low_prices = data['low']
 
             # Calculate Indicators
             sma_short = self.talib_module.SMA(close_prices, timeperiod=REC_SMA_SHORT)
@@ -981,8 +1104,7 @@ class App(ctk.CTk):
             latest_adx = adx.iloc[-1] if not adx.empty else np.nan
 
             if pd.isna(latest_sma_short) or pd.isna(latest_sma_long) or pd.isna(latest_rsi) or pd.isna(latest_adx):
-                self.log_message("TA Calc Warning: Incomplete indicator calculation.", tag="negative")
-                return None
+                return None, "incomplete indicator calculation"
 
             # Scoring Logic
             score = 0.0; trend_score = 0.0
@@ -1004,203 +1126,77 @@ class App(ctk.CTk):
                 'recommendation': recommendation, 'score': score, 'adx': latest_adx,
                 'rsi': latest_rsi, 'sma_short': latest_sma_short, 'sma_long': latest_sma_long
             }
-            return results
+            return results, None
 
         except Exception as e:
-            self.log_message(f"Error calculating TA indicators: {e}", tag="negative")
             print(f"Error calculating TA indicators: {e}"); traceback.print_exc()
-            return None
+            return None, str(e)
 
 
     # --------------------------------------------------------------------------
     # Machine Learning Logic Methods
     # --------------------------------------------------------------------------
 
-    def generate_ml_prediction(self):
-        """Loads ML model if needed, runs prediction, and triggers hybrid recommendation."""
-        # --- (Implementation from previous fix - app_py_ta_log_fix) ---
-        self.latest_feature_importances = None
-        self._update_feature_importance_button_state()
-        self._predicting_ml = True
-
-        custom_symbol = self.custom_symbol_entry.get().strip().upper()
-        symbol_used = custom_symbol if custom_symbol else self.symbol_var.get()
-
-        # Load Model
-        if not self.ml_model_loaded:
-            try:
-                horizon = int(self.ml_horizon_var.get())
-            except ValueError: horizon = self.ml_default_horizon
-            try:
-                self.log_message(f"\n--- Machine Learning ---")
-                self.log_message(f"Attempting to load model for {symbol_used} (Horizon: {horizon}d)...")
-                model_loaded = self.ml_service.load_model_for_symbol(symbol_used, prediction_horizon=horizon)
-                if not model_loaded:
-                    self.log_message(f"No pre-trained model found. Proceeding with TA only.")
-                    self._predicting_ml = False; self._update_matrix_display(force_update=True); self._start_matrix_loop_if_needed(); return # Restart loop on fail
-                self.ml_model_loaded = True
-                loaded_meta = self.ml_service.get_loaded_model_metadata()
-                model_name = loaded_meta.get('model_class_name', 'Unknown') if loaded_meta else 'Unknown'
-                self.log_message(f"Successfully loaded model: {model_name}")
-                self.latest_feature_importances = self.ml_service.get_loaded_feature_importances()
-                self._update_feature_importance_button_state()
-            except Exception as e:
-                self.log_message(f"Error loading ML model: {e}", tag="negative")
-                self._predicting_ml = False; self._update_matrix_display(force_update=True); self._start_matrix_loop_if_needed(); return # Restart loop on fail
-
-        # Run Prediction
-        if self.current_data is None or self.current_data.empty:
-            self.log_message("Error: No data loaded. Cannot generate ML prediction.", tag="negative")
-            self._predicting_ml = False; return
-
-        loaded_meta = self.ml_service.get_loaded_model_metadata()
-        model_name = loaded_meta.get('model_class_name', 'Unknown') if loaded_meta else 'Unknown'
-        horizon = loaded_meta.get('horizon', '?') if loaded_meta else '?'
-        self.log_message(f"Generating ML Prediction (Model: {model_name}, Horizon: {horizon}d)...")
-        self.set_led_state("ML", "on", flicker=False)
-        self.update_idletasks()
-
-        try:
-            try:
-                 significance_pct = float(self.ml_threshold_var.get())
-                 threshold = significance_pct / 100.0
-            except ValueError: threshold = 0.01 # Fallback
-
-            self.ml_prediction = self.ml_service.predict(
-                self.current_data.copy(),
-                target_threshold=threshold
-            )
-
-            if 'error' in self.ml_prediction:
-                 self.log_message(f"ML Prediction Error: {self.ml_prediction['error']}", tag="negative")
-                 self.ml_prediction = None
-            else:
-                 self.log_message(f"ML Direction: {self.ml_prediction.get('direction')}")
-                 confidence = self.ml_prediction.get('confidence')
-                 confidence_str = f"{confidence:.3f}" if confidence is not None else "N/A"
-                 self.log_message(f"ML Confidence: {confidence_str}")
-                 self.log_message(f"ML Confidence Level: {self.ml_prediction.get('confidence_level', 'UNKNOWN')}")
-
-            if self.ml_enable_hybrid and self.ml_prediction and self.latest_ta_results:
-                self.generate_hybrid_recommendation() # This will force update matrix and restart loop
-            else:
-                 self._update_matrix_display(force_update=True) # Show TA result if hybrid off/failed
-                 self._start_matrix_loop_if_needed() # Restart loop
-
-        except Exception as e:
-            self.log_message(f"Error during ML prediction step: {e}", tag="negative")
-            print(f"Error during ML prediction step: {e}"); traceback.print_exc()
-            self.ml_prediction = None; self._update_matrix_display(force_update=True); self._start_matrix_loop_if_needed(); # Restart loop
-        finally:
-            self.set_led_state("ML", "off"); self._predicting_ml = False
-
-
-    def generate_hybrid_recommendation(self):
-        """Gets hybrid recommendation using stored TA and ML results."""
-        # --- (Implementation from previous fix - app_py_ta_log_fix) ---
-        if not self.ml_enable_hybrid: return
-        if self.ml_prediction is None or 'error' in self.ml_prediction:
-            self._update_matrix_display(force_update=True); self._start_matrix_loop_if_needed(); return # Restart loop
-        if self.latest_ta_results is None: return
-
-        self.log_message(f"\n--- Hybrid Recommendation ---")
-        self.set_led_state("CPU", "on", flicker=True)
-        self.update_idletasks()
-
-        try:
-            try:
-                 significance_pct = float(self.ml_threshold_var.get())
-                 threshold = significance_pct / 100.0
-            except ValueError: threshold = 0.01 # Fallback
-
-            hybrid_result = self.ml_service.get_hybrid_recommendation(
-                df=self.current_data.copy(), technical_score=self.latest_technical_score,
-                adx_value=self.latest_adx, target_threshold=threshold
-            )
-
-            self.log_message(f"Hybrid Recommendation: {hybrid_result.get('recommendation')}")
-            self.log_message(f"Hybrid Score: {hybrid_result.get('hybrid_score'):.2f}")
-
-            self.latest_recommendation = hybrid_result.get('recommendation', 'ERROR').upper() # Update main rec variable
-            self._update_matrix_display(force_update=True)
-            self._start_matrix_loop_if_needed() # Restart loop
-
-
-        except Exception as e:
-            self.log_message(f"Error generating hybrid recommendation: {e}", tag="negative")
-            print(f"Error generating hybrid recommendation: {e}"); traceback.print_exc()
-            self.latest_recommendation = self.latest_ta_recommendation # Fallback to TA
-            self._update_matrix_display(force_update=True)
-            self._start_matrix_loop_if_needed() # Restart loop
-        finally:
-            self.set_led_state("CPU", "off")
-
-
     def train_ml_model(self):
-        """Trains, evaluates, and saves an ML model."""
+        """Validates parameters, then trains/evaluates/saves an ML model in the background."""
         custom_symbol = self.custom_symbol_entry.get().strip().upper()
         symbol_used = custom_symbol if custom_symbol else self.symbol_var.get()
 
         if self.current_data is None or self.current_data.empty:
             self.log_message("Error: No data loaded. Please load data first.", tag="negative"); return
 
-        self.latest_feature_importances = None; self._update_feature_importance_button_state()
-        self.log_message(f"\n--- Starting ML Training for {symbol_used} ---", clear_first=True)
-        self.set_led_state("ML", "on", flicker=True); self.update_idletasks() # Flicker during train
-
+        # Read + validate parameters on the main thread (Tk vars)
         try:
-            # Get parameters
             horizon = int(self.ml_horizon_var.get()); selected_model_type = self.ml_model_type_var.get()
             test_size_pct = float(self.ml_test_split_var.get()); significance_pct = float(self.ml_threshold_var.get())
-
-            # Validate and convert
             if not (0 < test_size_pct < 100): raise ValueError("Test Size % must be between 0 and 100.")
             if significance_pct <= 0: raise ValueError("Significance Threshold % must be positive.")
             if horizon < 1 or horizon > 60: raise ValueError("Horizon must be between 1 and 60 days.")
-            test_size = test_size_pct / 100.0; threshold = significance_pct / 100.0
+        except ValueError as ve:
+            self.log_message(f"Parameter Error: {ve}", tag="negative")
+            print(f"ML Training Parameter Error: {ve}")
+            return
+        test_size = test_size_pct / 100.0; threshold = significance_pct / 100.0
 
-            self.log_message(f"Model: {selected_model_type}, Type: classification, Horizon: {horizon}d, Test Size: {test_size_pct:.1f}%, Threshold: {threshold:.4f}")
+        self.latest_feature_importances = None; self._update_feature_importance_button_state()
+        self.log_message(f"\n--- Starting ML Training for {symbol_used} ---", clear_first=True)
+        self.log_message(f"Model: {selected_model_type}, Type: classification, Horizon: {horizon}d, Test Size: {test_size_pct:.1f}%, Threshold: {threshold:.4f}")
 
-            # Call service
-            results = self.ml_service.train_model(
-                symbol=symbol_used, df=self.current_data.copy(), model_type=selected_model_type,
+        df_snapshot = self.current_data.copy()
+        busy = (self.train_ml_button,) if hasattr(self, 'train_ml_button') else ()
+
+        def train_worker():
+            return self.ml_service.train_model(
+                symbol=symbol_used, df=df_snapshot, model_type=selected_model_type,
                 prediction_type='classification', prediction_horizon=horizon,
                 test_size=test_size, target_threshold=threshold
             )
 
-            # Process results
+        def on_done(results):
             model_info = results.get('model_info', {}); metrics = results.get('metrics', {})
             self.log_message("\n--- Training Complete ---")
             self.log_message(f"Model saved: {os.path.basename(model_info.get('path','N/A'))}")
             self.log_message("\n--- Model Performance (Test Set) ---")
-            metrics_str = "\n".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
-            self.log_message(metrics_str)
+            self.log_message("\n".join([f"{k}: {v:.4f}" for k, v in metrics.items()]))
 
-            # Store importances and update button
             self.latest_feature_importances = self.ml_service.get_loaded_feature_importances()
             self._update_feature_importance_button_state()
             if self.latest_feature_importances: self.log_message("Feature importances captured. Use 'Show Features' button.")
             else: self.log_message("Feature importances not available for this model type.")
 
             self.ml_model_loaded = True
-
-            # --- ML LED Change: Keep solid ON after successful train ---
+            # Keep the ML LED solid ON after a successful train (run_in_background
+            # turned it off when the worker finished)
             self.set_led_state("ML", "on", flicker=False)
-
-            # Redraw chart
-            self.log_message("Updating chart display after training...")
             self.plot_data(self.current_data)
-            self.update_idletasks()
 
-        except ValueError as ve:
-             self.log_message(f"Parameter Error: {ve}", tag="negative"); print(f"ML Training Parameter Error: {ve}")
-             self.set_led_state("ML", "off") # Turn off on error
-        except Exception as e:
-            self.log_message(f"Error training ML model: {type(e).__name__} - {e}", tag="negative")
-            print("\n--- ML Training Error Traceback ---"); traceback.print_exc(); print("--- End Traceback ---\n")
+        def on_error(exc):
+            self.log_message(f"Error training ML model: {type(exc).__name__} - {exc}", tag="negative")
+            print("\n--- ML Training Error Traceback ---"); traceback.print_exception(exc); print("--- End Traceback ---\n")
             self.latest_feature_importances = None; self._update_feature_importance_button_state()
-            self.set_led_state("ML", "off") # Turn off on error
-        # --- ML LED Change: REMOVED finally block turning ML off ---
+
+        self.run_in_background(train_worker, on_done=on_done, on_error=on_error,
+                               busy_widgets=busy, led=("ML", True))
 
 
     # --------------------------------------------------------------------------
@@ -1249,48 +1245,59 @@ class App(ctk.CTk):
 
         self.log_message(f"\n--- Running Backtest: {selected_strategy_name} on {symbol_used} ---", clear_first=True)
         self.log_message(f"Params: {', '.join(param_log_list)}")
-        self.set_led_state("CPU", "on", flicker=True); self.update_idletasks()
 
-        selected_strategy_class = None; stats = None; bt_results = None
-        try:
-            # Dynamic Loading
-            if isinstance(strategy_loader, str):
-                module_path, class_name = strategy_loader.rsplit('.', 1)
-                needs_talib = any(s in strategy_loader for s in ["rsi_oscillator", "volatility_breakout", "macd_strategy", "bollinger_bands_strategy"])
-                needs_ephem = "real_moon_strategy" in strategy_loader
-                if needs_talib and self.talib_module is None: self._load_optional_modules();
-                if needs_ephem and self.ephem_module is None: self._load_optional_modules();
-                if needs_talib and self.talib_module is None: raise ImportError("TA-Lib is required but failed to load.")
-                if needs_ephem and self.ephem_module is None: raise ImportError("Ephem is required but failed to load.")
-                strategy_module = importlib.import_module(module_path)
-                if needs_talib: setattr(strategy_module, 'talib', self.talib_module)
-                if needs_ephem: setattr(strategy_module, 'ephem', self.ephem_module)
-                selected_strategy_class = getattr(strategy_module, class_name)
-                if class_name == "RealMoonStrategy":
-                    if not OBSERVER_LAT or not OBSERVER_LON: raise ValueError("Observer Lat/Lon not set for RealMoonStrategy")
-                    selected_strategy_class.OBSERVER_LAT = OBSERVER_LAT
-                    selected_strategy_class.OBSERVER_LON = OBSERVER_LON
-                    selected_strategy_class.OBSERVER_ELEV = OBSERVER_ELEV
-            else: selected_strategy_class = strategy_loader
+        data_snapshot = self.current_data.copy()
 
-            if selected_strategy_class is None: raise ValueError("Could not load strategy class.")
-
-            # Run Backtest
-            stats, bt_results = run_backtest(
-                strategy_class=selected_strategy_class, data=self.current_data.copy(),
+        def backtest_worker():
+            strategy_class = self._load_strategy_class(strategy_loader)
+            return run_backtest(
+                strategy_class=strategy_class, data=data_snapshot,
                 cash=DEFAULT_CASH, commission=DEFAULT_COMMISSION, **strategy_params
             )
 
-            # Log Results
+        def on_done(result):
+            stats, _bt_results = result
             if stats is not None:
                 self.log_message("--- Backtest Results ---"); self._log_backtest_stats(stats)
-            else: self.log_message("Backtest failed to produce results.", tag="negative")
+            else:
+                self.log_message("Backtest failed to produce results.", tag="negative")
 
-        except ImportError as e: self.log_message(f"ImportError: {e}.", tag="negative")
-        except Exception as e:
-            self.log_message(f"Backtesting Error: {type(e).__name__} - {e}", tag="negative")
-            print("\n--- Backtesting Error Traceback ---"); traceback.print_exc(); print("--- End Traceback ---\n")
-        finally: self.set_led_state("CPU", "off")
+        def on_error(exc):
+            if isinstance(exc, ImportError):
+                self.log_message(f"ImportError: {exc}.", tag="negative")
+            else:
+                self.log_message(f"Backtesting Error: {type(exc).__name__} - {exc}", tag="negative")
+                print("\n--- Backtesting Error Traceback ---"); traceback.print_exception(exc); print("--- End Traceback ---\n")
+
+        self.run_in_background(backtest_worker, on_done=on_done, on_error=on_error,
+                               busy_widgets=(self.run_backtest_button,), led=("CPU", True))
+
+
+    def _load_strategy_class(self, strategy_loader):
+        """Resolves a STRATEGY_LOADERS entry to a strategy class, importing and
+        injecting optional modules (TA-Lib, Ephem) for string-path loaders."""
+        if not isinstance(strategy_loader, str):
+            return strategy_loader
+
+        module_path, class_name = strategy_loader.rsplit('.', 1)
+        needs_talib = any(s in strategy_loader for s in ["rsi_oscillator", "volatility_breakout", "macd_strategy", "bollinger_bands_strategy"])
+        needs_ephem = "real_moon_strategy" in strategy_loader
+        if (needs_talib and self.talib_module is None) or (needs_ephem and self.ephem_module is None):
+            self._load_optional_modules()
+        if needs_talib and self.talib_module is None: raise ImportError("TA-Lib is required but failed to load.")
+        if needs_ephem and self.ephem_module is None: raise ImportError("Ephem is required but failed to load.")
+
+        strategy_module = importlib.import_module(module_path)
+        if needs_talib: setattr(strategy_module, 'talib', self.talib_module)
+        if needs_ephem: setattr(strategy_module, 'ephem', self.ephem_module)
+        strategy_class = getattr(strategy_module, class_name)
+
+        if class_name == "RealMoonStrategy":
+            if not OBSERVER_LAT or not OBSERVER_LON: raise ValueError("Observer Lat/Lon not set for RealMoonStrategy")
+            strategy_class.OBSERVER_LAT = OBSERVER_LAT
+            strategy_class.OBSERVER_LON = OBSERVER_LON
+            strategy_class.OBSERVER_ELEV = OBSERVER_ELEV
+        return strategy_class
 
 
     def _log_backtest_stats(self, stats: pd.Series):
@@ -1505,13 +1512,16 @@ class App(ctk.CTk):
         ctk.CTkLabel(info_frame, text="Feature Importance indicates relative contribution. Chart shows top features by absolute score.", font=self.font_normal, text_color=COLOR_FOREGROUND, wraplength=650, justify="left").pack(anchor="w")
         chart_frame = ctk.CTkFrame(popup, fg_color=COLOR_CHART_BG); chart_frame.grid(row=1, column=0, padx=15, pady=5, sticky="nsew")
         chart_frame.grid_rowconfigure(0, weight=1); chart_frame.grid_columnconfigure(0, weight=1)
-        fig_feat, ax_feat = plt.subplots(figsize=(6, 5)); fig_feat.set_facecolor(COLOR_CHART_BG); ax_feat.set_facecolor(COLOR_CHART_BG)
+        # Use a plain Figure (not plt.subplots) so pyplot never tracks it -- popup
+        # figures were previously never closed and leaked
+        fig_feat = Figure(figsize=(6, 5)); ax_feat = fig_feat.add_subplot(111)
+        fig_feat.set_facecolor(COLOR_CHART_BG); ax_feat.set_facecolor(COLOR_CHART_BG)
         y_pos = np.arange(len(feature_names)); ax_feat.barh(y_pos, importance_scores[::-1], align='center', color=COLOR_ACCENT)
         ax_feat.set_yticks(y_pos); ax_feat.set_yticklabels(feature_names[::-1]); ax_feat.invert_yaxis()
         ax_feat.set_xlabel('Importance Score (Absolute)', color=COLOR_CHART_AXES); ax_feat.set_title('Top Feature Importances', color=COLOR_CHART_AXES)
         ax_feat.tick_params(axis='x', colors=COLOR_CHART_AXES); ax_feat.tick_params(axis='y', colors=COLOR_CHART_AXES)
         for spine in ax_feat.spines.values(): spine.set_color(COLOR_CHART_AXES)
-        ax_feat.grid(axis='x', color=COLOR_DROPDOWN_BG, linestyle='--', linewidth=0.5); plt.tight_layout()
+        ax_feat.grid(axis='x', color=COLOR_DROPDOWN_BG, linestyle='--', linewidth=0.5); fig_feat.tight_layout()
         canvas_feat = FigureCanvasTkAgg(fig_feat, master=chart_frame); canvas_feat_widget = canvas_feat.get_tk_widget()
         canvas_feat_widget.pack(fill="both", expand=True, padx=5, pady=5); canvas_feat.draw()
         ctk.CTkButton(popup, text="Close", command=popup.destroy, font=self.font_button, text_color=COLOR_BACKGROUND, fg_color=COLOR_BUTTON, hover_color=COLOR_BUTTON_HOVER).grid(row=2, column=0, pady=(5, 15))
@@ -1536,8 +1546,10 @@ class App(ctk.CTk):
         """Logs a message to the output textbox, optionally clearing first."""
         # --- (Implementation from previous context - app_py_ta_log_fix) ---
         is_error_warning = "error" in message.lower() or "warning" in message.lower() or "failed" in message.lower()
-        if is_error_warning and "ML Prediction Error:" not in message : self.set_led_state("ERR", "on", flicker=True);
-        if self.winfo_exists(): self.after(1500, lambda name="ERR": self.set_led_state(name, "off"))
+        if is_error_warning and "ML Prediction Error:" not in message:
+            self.set_led_state("ERR", "on", flicker=True)
+            if self.winfo_exists():
+                self.after(1500, lambda name="ERR": self.set_led_state(name, "off"))
         if hasattr(self, 'output_textbox') and self.output_textbox.winfo_exists():
             try:
                 self.output_textbox.configure(state="normal")
@@ -1743,6 +1755,8 @@ class App(ctk.CTk):
     def on_closing(self):
         """Handles graceful shutdown procedures."""
         print("Closing application gracefully...")
+        # Interrupt any fetcher retry sleeps on worker threads
+        self._shutdown_event.set()
         # Stop auto-trader if running
         if self.auto_trader_tab and self.auto_trader_tab.auto_trader and self.auto_trader_tab.auto_trader.is_running:
             print("Stopping auto-trader...")

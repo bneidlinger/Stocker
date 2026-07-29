@@ -1,6 +1,5 @@
 # trading/backtester.py
 # Handles running backtests using the backtesting.py library
-# MODIFIED: Reinstate workaround using bt._results._trades
 
 from backtesting import Backtest
 import pandas as pd
@@ -61,18 +60,12 @@ def run_backtest(strategy_class, data: pd.DataFrame, cash: int = 10000, commissi
         # Initialize Backtest WITHOUT passing strategy_params to constructor
         bt = Backtest(backtest_data, strategy_class, cash=cash, commission=commission)
 
-        # Run backtest WITH strategy_params BUT WITHOUT return_trades argument
         stats = bt.run(**strategy_params)
 
-        # WORKAROUND REINSTATED: Manually add the trades DataFrame to the stats Series
-        # Accessing internal _results._trades attribute, necessary due to run() conflict
-        try:
-            # Attempt to access trades via the internal attribute (note underscore on _trades)
-            stats['_trades'] = bt._results._trades
-            print("Successfully retrieved trades via bt._results._trades")
-        except AttributeError:
-            print("Warning: Could not access bt._results._trades. Trade list might be missing.")
-            # Ensure the '_trades' key exists even if empty
+        # backtesting>=0.6 includes the trades table in the returned stats Series;
+        # guard only for the unexpected case so downstream code can rely on the key
+        if '_trades' not in stats.index:
+            print("Warning: stats has no '_trades' entry; using empty trade list.")
             stats['_trades'] = pd.DataFrame()
 
         print("--- Backtest Complete ---")
