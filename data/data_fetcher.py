@@ -14,10 +14,15 @@ class DataFetcher:
     Class responsible for fetching historical stock data using yfinance.
     """
 
-    def __init__(self):
-        """Initializes the DataFetcher."""
-        # Could add initialization for other data sources here later
-        self.cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "cache")
+    def __init__(self, cache_dir: str = None):
+        """Initializes the DataFetcher.
+
+        Args:
+            cache_dir: Override the cache directory (used by tests). Defaults
+                       to <repo>/data/cache.
+        """
+        self.cache_dir = cache_dir or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "cache")
         os.makedirs(self.cache_dir, exist_ok=True)
         self.max_retries = 3
         self.retry_delay = 5  # seconds
@@ -128,14 +133,11 @@ class DataFetcher:
         if os.path.exists(cache_file):
             cache_age = time.time() - os.path.getmtime(cache_file)
             if cache_age < 900:  # 15 minutes in seconds
-                try:
-                    price_df = pd.read_csv(cache_file)
-                    price = price_df.iloc[0, 0]
-                    print(f"Using cached current price for {symbol}: {price}")
-                    return float(price)
-                except Exception as e:
-                    print(f"Error reading cached price for {symbol}: {e}")
-                    # Continue to fetch from API if cache read fails
+                cached_price = self._read_price_cache(cache_file)
+                if cached_price is not None:
+                    print(f"Using cached current price for {symbol}: {cached_price}")
+                    return cached_price
+                # Continue to fetch from API if cache read fails
         
         # Add jitter to prevent synchronized API requests
         jitter = random.uniform(0.1, 0.5)
@@ -155,11 +157,7 @@ class DataFetcher:
                 if price:
                     # Successfully got price via fast_info
                     price = float(price)
-                    # Save to cache
-                    try:
-                        pd.DataFrame([price]).to_csv(cache_file, index=False, header=False)
-                    except Exception as e:
-                        print(f"Error saving price cache for {symbol}: {e}")
+                    self._write_price_cache(cache_file, price)
                     return price
                 else:
                     # Fallback: get last closing price from recent history
@@ -175,11 +173,7 @@ class DataFetcher:
 
                         if fallback_price is not None:
                             print(f"Fallback successful: Using last closing price for {symbol}: {fallback_price}")
-                            # Save to cache
-                            try:
-                                pd.DataFrame([fallback_price]).to_csv(cache_file, index=False, header=False)
-                            except Exception as e:
-                                print(f"Error saving price cache for {symbol}: {e}")
+                            self._write_price_cache(cache_file, fallback_price)
                             return fallback_price
                         else:
                             print(f"Fallback failed: 'Close' column not found in fallback history for {symbol}.")
@@ -207,3 +201,26 @@ class DataFetcher:
         
         print(f"Failed to fetch current price for {symbol} after {self.max_retries} attempts")
         return None
+
+    @staticmethod
+    def _write_price_cache(cache_file: str, price: float):
+        """Writes a single price value to the cache file (no header)."""
+        try:
+            pd.DataFrame([float(price)]).to_csv(cache_file, index=False, header=False)
+        except Exception as e:
+            print(f"Error saving price cache to {cache_file}: {e}")
+
+    @staticmethod
+    def _read_price_cache(cache_file: str) -> float | None:
+        """Reads a single price value from the cache file, or None if unreadable.
+
+        The file is written without a header (see _write_price_cache), so it
+        must be read with header=None -- reading with the default header=0
+        consumes the value as a column name and leaves an empty frame.
+        """
+        try:
+            price_df = pd.read_csv(cache_file, header=None)
+            return float(price_df.iloc[0, 0])
+        except Exception as e:
+            print(f"Error reading cached price from {cache_file}: {e}")
+            return None
