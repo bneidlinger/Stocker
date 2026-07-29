@@ -66,8 +66,7 @@ class DataFetcher:
             if cache_age < 86400:  # 24 hours in seconds
                 try:
                     print(f"Loading {symbol} data from cache")
-                    history = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-                    return history
+                    return self._read_cached_history(cache_file)
                 except Exception as e:
                     print(f"Error reading cache for {symbol}: {e}")
                     # Continue to fetch from API if cache read fails
@@ -109,6 +108,13 @@ class DataFetcher:
                 if not all(col in history.columns for col in required_cols):
                     print(
                         f"Warning: Missing required OHLCV columns in data for {symbol}. Found: {history.columns.tolist()}")
+
+                # Normalize to a tz-naive DatetimeIndex BEFORE caching: pandas
+                # cannot round-trip mixed-offset (EST/EDT) timestamps through
+                # CSV -- they come back as an object index, which silently
+                # breaks backtesting and drops date-based ML features
+                if isinstance(history.index, pd.DatetimeIndex) and history.index.tz is not None:
+                    history.index = history.index.tz_localize(None)
 
                 # Save to cache
                 try:
@@ -216,6 +222,24 @@ class DataFetcher:
         
         print(f"Failed to fetch current price for {symbol} after {self.max_retries} attempts")
         return None
+
+    @staticmethod
+    def _read_cached_history(cache_file: str) -> pd.DataFrame:
+        """Reads a cached OHLCV CSV, guaranteeing a tz-naive DatetimeIndex.
+
+        Cache files written before tz normalization stored tz-aware timestamps
+        whose mixed UTC offsets (EST/EDT) pandas 2 cannot parse back into a
+        DatetimeIndex -- it silently returns an object index instead, which
+        breaks the backtester and drops date-based ML features. Repair that
+        here so old cache files keep working.
+        """
+        history = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+        if not isinstance(history.index, pd.DatetimeIndex):
+            history.index = (pd.to_datetime(history.index, utc=True)
+                             .tz_convert("America/New_York"))
+        if getattr(history.index, "tz", None) is not None:
+            history.index = history.index.tz_localize(None)
+        return history
 
     @staticmethod
     def _write_price_cache(cache_file: str, price: float):
