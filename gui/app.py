@@ -689,29 +689,83 @@ class App(ctk.CTk):
 
 
     def initialize_leds(self):
-        """Sets initial LED states and starts background loops."""
-        print("Initializing LEDs...")
-        for name, led_widget in self.leds.items():
-            # Ensure widget exists before configuring
-            if led_widget and led_widget.winfo_exists():
-                if name == "PWR":
-                    print("Setting PWR LED ON")
-                    led_widget.set_state("on")
-                    led_widget.enable_flicker(True)
-                else:
-                    led_widget.set_state("off")
-                    led_widget.enable_flicker(False) # Ensure others don't flicker initially
-            else:
-                print(f"Warning: LED widget '{name}' not found or destroyed during initialization.")
+        """Runs a power-on lamp test, then settles into the initial LED states.
 
-        # Start background loops if they aren't running
-        if self.activity_led_job is None:
-            # print("Starting activity LED loop...") # Debug
-            self._update_activity_leds()
+        Old panel gear flashes every indicator at POST before dropping to the
+        idle state. While the test runs, set_led_state calls are deferred and
+        replayed afterward so no real status change is lost.
+        """
+        print("Initializing LEDs...")
+        self._lamp_test_active = True
+        self._deferred_led_states = {}
+
+        order = [n for n in ("PWR", "CPU", "DATA", "COM", "ERR", "ML", "AUTO", "AI")
+                 if n in self.leds]
+        order += [n for n in self.leds if n not in order]
+        self._lamp_test_queue = order
+
+        # Matrix loop is independent of the LEDs; the activity LED loop is
+        # started by _finish_lamp_test once the panel has settled.
         if self.matrix_update_job is None:
-            # print("Starting matrix display loop...") # Debug
-            # Use _start_matrix_loop_if_needed to prevent multiple loops if called again
             self._start_matrix_loop_if_needed()
+
+        # The first paint of the window takes long enough that timers
+        # scheduled now would all expire and fire in one burst, so wait
+        # until the window is actually visible, then step the sequence
+        # with chained timers that cannot collapse.
+        self.after(50, self._lamp_test_wait_visible)
+
+    def _lamp_test_wait_visible(self):
+        """Polls until the window is painted, then starts the lamp test."""
+        if not self.winfo_exists():
+            return
+        if not self.winfo_viewable():
+            self.after(100, self._lamp_test_wait_visible)
+            return
+        self.after(150, lambda: self._lamp_test_step(0))
+
+    def _lamp_test_step(self, i):
+        """Lights LED i, then chains to the next step."""
+        if not self.winfo_exists():
+            return
+        if i < len(self._lamp_test_queue):
+            self._lamp_test_light(self._lamp_test_queue[i])
+            self.after(70, lambda: self._lamp_test_step(i + 1))
+        else:
+            # Hold with everything lit, then drop to idle states.
+            self.after(350, self._finish_lamp_test)
+
+    def _lamp_test_light(self, name):
+        """Lights one LED during the power-on lamp test."""
+        if not self.winfo_exists():
+            return
+        led_widget = self.leds.get(name)
+        if led_widget and led_widget.winfo_exists():
+            led_widget.set_state("on")
+            led_widget.enable_flicker(False)
+
+    def _finish_lamp_test(self):
+        """Drops the lamp test, lets the embers fade, and applies idle states."""
+        if not self.winfo_exists():
+            return
+        for led_widget in self.leds.values():
+            if led_widget and led_widget.winfo_exists():
+                led_widget.set_state("off")
+                led_widget.enable_flicker(False)
+
+        def settle():
+            if not self.winfo_exists():
+                return
+            self._lamp_test_active = False
+            self.set_led_state("PWR", "on", flicker=True)
+            for name, (state, flicker) in self._deferred_led_states.items():
+                if name != "PWR":
+                    self.set_led_state(name, state, flicker)
+            self._deferred_led_states = {}
+            if self.activity_led_job is None:
+                self._update_activity_leds()
+
+        self.after(420, settle)
 
 
     # --------------------------------------------------------------------------
@@ -1562,8 +1616,11 @@ class App(ctk.CTk):
 
     def set_led_state(self, name: str, state: str, flicker: bool | None = None):
         """Sets the state ('on'/'off') and flicker status of a specific LED."""
-        # --- (Implementation from previous context - app_py_ta_log_fix) ---
         name_upper = name.upper()
+        if getattr(self, "_lamp_test_active", False):
+            # Power-on lamp test owns the panel; replay this once it settles.
+            self._deferred_led_states[name_upper] = (state, flicker)
+            return
         if name_upper in self.leds:
             led_widget = self.leds[name_upper]
             if led_widget and led_widget.winfo_exists(): # Check if widget exists

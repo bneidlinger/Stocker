@@ -115,7 +115,9 @@ Recommendations are color-coded:
 
 ### 6. Indicator LED Meanings
 
-The status LEDs at the bottom of the interface provide system status:
+The status LEDs at the bottom of the interface provide system status. On
+startup the panel runs a brief power-on lamp test -- every LED lights in
+sequence, holds, and fades out before the PWR light comes up.
 - **PWR** (Red): Power indicator, always on (click for an Easter egg!)
 - **CPU** (Green): Processor activity during calculations
 - **DATA** (Yellow): Data transfer activity

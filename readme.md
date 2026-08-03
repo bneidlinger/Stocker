@@ -39,7 +39,7 @@ A retro-themed stock trading application with backtesting, machine learning pred
 - Dedicated LED indicators (AUTO, AI) for real-time status
 
 **Retro UI**
-- Worn LED indicators with flicker effects (PWR, CPU, DATA, COM, ERR, ML, AUTO, AI)
+- Worn LED indicators with power-on lamp test, warm-up/afterglow fades, and electrical flicker (PWR, CPU, DATA, COM, ERR, ML, AUTO, AI)
 - Dot matrix recommendation display with color-coded signals
 - Neon color scheme: pink buttons, cyan text, dark blue backgrounds
 - Monospace console log with color-tagged messages
